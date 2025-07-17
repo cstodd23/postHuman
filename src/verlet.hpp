@@ -3,12 +3,13 @@
 #include "raymath.h"
 #include <vector>
 #include <queue>
+#include <unordered_map>
 #include <cmath>
 #include <cstdint>
 
 constexpr int DEFAULT_SUBSTEPS = 8;
 constexpr float DEFAULT_RADIUS = 10.0f;
-constexpr float DEFAULT_DAMPING_FACTOR = 0.9999f;
+constexpr float DEFAULT_DAMPING_FACTOR = 0.9995f;
 constexpr float DEFAULT_GRAVITY = -980.7f;
 constexpr float MARGIN_WIDTH = 10.0f;
 constexpr float RESPONSE_COEF = 0.5f;
@@ -29,11 +30,20 @@ struct VerletObject {
         : currPosition(pos), lastPosition(pos), radius(radius), fixed(fixed) {}
 
     void UpdatePosition(float dt) {
+        const float distance = Vector2Distance(currPosition, lastPosition);
+        // Vector2 accelerationWithoutGravity = Vector2Add(acceleration, {0.0f, DEFAULT_GRAVITY});
+        // const float acceleration_magnitude = Vector2Length(accelerationWithoutGravity);
+        // if (distance < 0.01f && acceleration_magnitude < 0.8f) {
+        //     lastPosition = currPosition; 
+        //     acceleration = {0.0f, 0.0f};
+        //     return;
+        // }
+        float dampining = 
         Vector2 temp = currPosition;
         const Vector2 displacement = Vector2Subtract(currPosition, lastPosition) * DEFAULT_DAMPING_FACTOR;
         lastPosition = currPosition;
         currPosition = currPosition + displacement + acceleration * dt * dt;
-        acceleration = {};
+        acceleration = {0.0f, 0.0f};
     }
 
     void UpdateVelocity(Vector2 v, float dt) {lastPosition -= v * dt;}
@@ -71,6 +81,7 @@ private:
 public:
     std::vector<VerletObject> objects;
     std::vector<VerletConstraint> constraints;
+    std::unordered_map<int32_t, int32_t> object_body_mapping;
     Solver(Vector2 size)
         : substeps(DEFAULT_SUBSTEPS), stageSize(size) {}
 
@@ -104,7 +115,49 @@ public:
     }
 
     void SolveCollisionsNaive() {
-        
+        for (size_t i = 0; i < objects.size(); i++) {
+            for (size_t j = i + 1; j < objects.size(); j++) {
+                SolveCollision(i, j);
+            }
+        }
+    }
+
+    void SolveCollision(int32_t obj1_id, int32_t obj2_id) {
+        if (object_body_mapping.count(obj1_id) && object_body_mapping.count(obj2_id)) {
+            if (object_body_mapping[obj1_id] == object_body_mapping[obj2_id]) {return;}
+        }
+        VerletObject& obj1 = objects[obj1_id];
+        VerletObject& obj2 = objects[obj2_id];
+
+        if (obj1.fixed && obj2.fixed) {return;}
+
+        float distance = Vector2Distance(obj1.currPosition, obj2.currPosition);
+        const Vector2 displacement = Vector2Subtract(obj1.currPosition, obj2.currPosition);
+        const float min_distance = obj1.radius + obj2.radius;
+        if (distance < 0.0001f) {distance = 0.0001f;}
+
+        if (distance < min_distance) {
+            float radius1 = obj1.radius;
+            float radius2 = obj2.radius;
+            const float massProportion1 = radius1 * radius1 * radius1;
+            const float massProportion2 = radius2 * radius2 * radius2;
+            const float totalMassProportion = massProportion1 + massProportion2;
+            const Vector2 collisionNormal = Vector2Normalize(displacement);
+            const float collisionRatio1 = massProportion2 / totalMassProportion;
+            const float collisionRatio2 = massProportion1 / totalMassProportion;
+            const float delta = RESPONSE_COEF * (distance - min_distance);
+            
+            if (!obj1.fixed && !obj2.fixed) {
+                Vector2 collisionVector1 = Vector2Scale(collisionNormal, (0.5f * collisionRatio1 * delta));
+                Vector2 collisionVector2 = Vector2Scale(collisionNormal, (0.5f * collisionRatio2 * delta));
+                obj1.currPosition = Vector2Subtract(obj1.currPosition, collisionVector1);
+                obj2.currPosition = Vector2Add(obj2.currPosition, collisionVector2);
+            } else if (!obj1.fixed && obj2.fixed) {
+                obj1.currPosition = Vector2Subtract(obj1.currPosition, Vector2Scale(collisionNormal, delta));
+            } else if (obj1.fixed && !obj2.fixed) {
+                obj2.currPosition = Vector2Add(obj2.currPosition, Vector2Scale(collisionNormal, delta));
+            }
+        }
     }
 
     void ApplyBorders(VerletObject& obj) {
@@ -181,13 +234,17 @@ public:
         SetTraceLogLevel(LOG_WARNING);
         InitWindow(worldWidth, worldHeight, "postHuman");
         for (int i = 0; i < 10; i++) {
-            SpawnCommand command = SpawnCommand({50.0f, 50.0f}, 2.0f * PI, 10.0f, 100.0f, 0.1f);
+            SpawnCommand command = SpawnCommand({50.0f, 50.0f}, 2.0f * PI, 10.0f, 700.0f, 0.15f);
             AddSpawnCommand(command);
         }
         for (int i = 0; i < 10; i++) {
-            SpawnCommand command = SpawnCommand({50.0f, 50.0f}, 2.0f * PI, 10.0f, 500.0f, 0.8f);
+            SpawnCommand command = SpawnCommand({50.0f, 50.0f}, 2.0f * PI, 20.0f, 100.0f, 0.8f);
             AddSpawnCommand(command);
         }
+        // SpawnCommand smallBall = SpawnCommand({150.0f, 150.0f}, 0.0f, 10.0f, 1000.0f, 0.0f);
+        // SpawnCommand bigBall = SpawnCommand({600.0f, 150.0f}, PI, 20.0f, 1000.0f, 0.0f);
+        // AddSpawnCommand(smallBall);
+        // AddSpawnCommand(bigBall);
         while (!WindowShouldClose()) {
             ProcessSpawnQueue();
             solver.UpdateNaive();
