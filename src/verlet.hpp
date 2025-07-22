@@ -9,7 +9,8 @@
 
 constexpr int DEFAULT_SUBSTEPS = 8;
 constexpr float DEFAULT_RADIUS = 10.0f;
-constexpr float DEFAULT_DAMPING_FACTOR = 0.9995f;
+constexpr float MAX_DAMPING_FACTOR = 0.9995f;
+constexpr float MIN_DAMPING_FACTOR = 0.999f;
 constexpr float DEFAULT_GRAVITY = -980.7f;
 constexpr float MARGIN_WIDTH = 10.0f;
 constexpr float RESPONSE_COEF = 0.5f;
@@ -17,6 +18,11 @@ constexpr float RESPONSE_COEF = 0.5f;
 
 
 struct VerletObject {
+    static constexpr float SLEEP_VELOCITY_THRESHOLD = 0.1f;
+    static constexpr float WAKE_VELOCITY_THRESHOLD = 1.0F;
+    static constexpr float SLEEP_TIME_REQUIRED = 5.0f;
+    static constexpr float MAX_DAMPING_FACTOR = 0.9995f;
+    static constexpr float MIN_DAMPING_FACTOR = 0.999f;
     Vector2 currPosition = {0.0f, 0.0f};
     Vector2 lastPosition = {0.0f, 0.0f};
     Vector2 acceleration = {0.0f, 0.0f};
@@ -24,29 +30,85 @@ struct VerletObject {
     Color color = WHITE;
     bool hidden = false;
     bool fixed = false;
+    bool isSleeping = false;
+    float sleepTimer = 0.0f;
+    bool wasInCollisionThisUpdate = false;
 
     VerletObject() = default;
     VerletObject(Vector2 pos, float radius, bool fixed)
         : currPosition(pos), lastPosition(pos), radius(radius), fixed(fixed) {}
 
     void UpdatePosition(float dt) {
+        if (fixed) {acceleration = {0.0f, 0.0f}; return;}
+
+        const Vector2 velocity = Vector2Subtract(currPosition, lastPosition);
+        const float speed = Vector2Length(velocity);
+
+        if (isSleeping) {
+            float displacement = Vector2Distance(currPosition, lastPosition);
+            if (displacement > radius * 0.1f || speed > WAKE_VELOCITY_THRESHOLD || wasInCollisionThisUpdate) {
+                Wake();
+            } else {
+                acceleration = {0.0f, 0.0f};
+                return;
+            }
+        }
+
         const float distance = Vector2Distance(currPosition, lastPosition);
-        // Vector2 accelerationWithoutGravity = Vector2Add(acceleration, {0.0f, DEFAULT_GRAVITY});
-        // const float acceleration_magnitude = Vector2Length(accelerationWithoutGravity);
-        // if (distance < 0.01f && acceleration_magnitude < 0.8f) {
-        //     lastPosition = currPosition; 
-        //     acceleration = {0.0f, 0.0f};
-        //     return;
-        // }
-        float dampining = 
-        Vector2 temp = currPosition;
-        const Vector2 displacement = Vector2Subtract(currPosition, lastPosition) * DEFAULT_DAMPING_FACTOR;
-        lastPosition = currPosition;
+
+        const float speedNormalized = std::min(speed / 100.0f, 9.0f);
+        const float logFactor = std::log(speedNormalized + 1.0f) / std::log(9.0f + 1.0f);
+        const float dynamicDamping = MIN_DAMPING_FACTOR + logFactor * (MAX_DAMPING_FACTOR - MIN_DAMPING_FACTOR);
+
+        // Vector2 temp = currPosition;
+        const Vector2 displacement = Vector2Subtract(currPosition, lastPosition) * dynamicDamping;
+        lastPosition = currPosition; // ADD SLEEPING TO THIS FUNCTION DUMMY
         currPosition = currPosition + displacement + acceleration * dt * dt;
+
+        UpdateSleepState(speed, dt);
+
         acceleration = {0.0f, 0.0f};
+        wasInCollisionThisUpdate = false;
     }
 
-    void UpdateVelocity(Vector2 v, float dt) {lastPosition -= v * dt;}
+    void UpdateSleepState(float speed, float dt) {
+        if (speed < SLEEP_VELOCITY_THRESHOLD) {
+            sleepTimer += dt;
+            if (sleepTimer > SLEEP_TIME_REQUIRED) {
+                Sleep();
+            }
+        } else {
+            sleepTimer = 0.0f;
+        }
+    }
+
+    void Sleep() {
+        if (!isSleeping) {
+            isSleeping = true;
+            lastPosition = currPosition;
+            color = GRAY;
+        }
+    }
+
+    void Wake() {
+        if (isSleeping) {
+            sleepTimer = 0.0f;
+            isSleeping = false;
+            color = WHITE;
+        }
+    }
+
+    void NotifyCollision() {
+        wasInCollisionThisUpdate = true;
+        if (isSleeping) {
+            Wake();
+        }
+    }
+
+    void UpdateVelocity(Vector2 v, float dt) {
+        lastPosition = Vector2Subtract(lastPosition, Vector2Scale(v, dt));
+        Wake();
+    }
 };
 
 struct VerletConstraint {
@@ -134,9 +196,15 @@ public:
         float distance = Vector2Distance(obj1.currPosition, obj2.currPosition);
         const Vector2 displacement = Vector2Subtract(obj1.currPosition, obj2.currPosition);
         const float min_distance = obj1.radius + obj2.radius;
-        if (distance < 0.0001f) {distance = 0.0001f;}
+        const float overlap = min_distance - distance;
+        if (distance < 0.0001f) {distance = 0.001f;}
 
-        if (distance < min_distance) {
+        constexpr float esp = 0.0001f;
+
+        if (distance < min_distance && overlap > esp) {
+            obj1.NotifyCollision();
+            obj2.NotifyCollision();
+
             float radius1 = obj1.radius;
             float radius2 = obj2.radius;
             const float massProportion1 = radius1 * radius1 * radius1;
