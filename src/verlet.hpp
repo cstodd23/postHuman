@@ -309,7 +309,7 @@ public:
         if (obj.currPosition.y > stageSize.y - margin) {
             collisionNormal = Vector2Add(collisionNormal, {0.0f, obj.currPosition.y - stageSize.y + margin});
         } else if (obj.currPosition.y < margin) {
-            collisionNormal = Vector2Subtract(collisionNormal, {margin - obj.currPosition.y, 0.0f});
+            collisionNormal = Vector2Subtract(collisionNormal, {0.0f, margin - obj.currPosition.y});
         }
         obj.currPosition = Vector2Subtract(obj.currPosition, Vector2Scale(collisionNormal, 0.2f * RESPONSE_COEF));
     }
@@ -387,6 +387,10 @@ private:
 
     int32_t lastRopeSegmentIndex = -1;
 
+    int32_t selectedObjectIndex = -1;
+    Vector2 dragOffset = {0.0f, 0.0f};
+    bool isDragging = false;
+
 public:
     Game(int worldW, int worldH)
         : worldWidth(worldW), worldHeight(worldH), solver(Solver({float(worldW), float(worldH)})), renderer(Renderer()) {}
@@ -445,6 +449,47 @@ public:
         lastRopeSegmentIndex = currentIndex;
     }
 
+    void HandleMouseInput() {
+        Vector2 mousePos = GetMousePosition();
+        
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            selectedObjectIndex = FindObjectAtPosition(mousePos);
+            if (selectedObjectIndex == -1) {return;}
+            VerletObject& obj = solver.objects[selectedObjectIndex];
+            if (obj.fixed) {
+                isDragging = true;
+                dragOffset = Vector2Subtract(mousePos, obj.currPosition);
+                obj.color = GREEN;
+            }
+        }
+
+        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && isDragging && selectedObjectIndex != -1) {
+            VerletObject& obj = solver.objects[selectedObjectIndex];
+            Vector2 newPos = Vector2Subtract(mousePos, dragOffset);
+            obj.currPosition = newPos;
+            obj.lastPosition = newPos;
+        }
+
+        if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+            if (isDragging && selectedObjectIndex != 1) {
+                solver.objects[selectedObjectIndex].color = RED;
+            }
+            isDragging = false;
+            selectedObjectIndex = -1;
+        }
+    }
+
+    int32_t FindObjectAtPosition(Vector2 pos) {
+        for (int32_t i = 0; i < static_cast<int32_t>(solver.objects.size()); i++) {
+            const VerletObject& obj = solver.objects[i];
+            float distance = Vector2Distance(pos, obj.currPosition);
+            if (distance <=obj.radius) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
     void MainLoop() {
         SetTraceLogLevel(LOG_WARNING);
         InitWindow(worldWidth, worldHeight, "postHuman");
@@ -463,6 +508,7 @@ public:
         // AddSpawnCommand(smallBall);
         // AddSpawnCommand(bigBall);
         while (!WindowShouldClose()) {
+            HandleMouseInput();
             ProcessSpawnQueue();
             solver.UpdateNaive();
             renderer.Render(worldWidth, worldHeight, solver);
