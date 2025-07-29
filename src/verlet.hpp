@@ -8,7 +8,7 @@
 #include <cstdint>
 
 constexpr int DEFAULT_SUBSTEPS = 8;
-constexpr int JAKOBSEN_ITERATIONS = 3;
+constexpr int JAKOBSEN_ITERATIONS = 10;
 constexpr float DEFAULT_RADIUS = 10.0f;
 constexpr float MAX_DAMPING_FACTOR = 0.9995f;
 constexpr float MIN_DAMPING_FACTOR = 0.999f;
@@ -29,9 +29,10 @@ struct VerletObject {
     Vector2 lastPosition = {0.0f, 0.0f};
     Vector2 acceleration = {0.0f, 0.0f};
     float radius = DEFAULT_RADIUS;
-    Color color = WHITE;
+    Color defaultColor;
+    Color color;
     bool hidden = false;
-    bool fixed = false;
+    bool fixed;
     bool isSleeping = false;
     float sleepTimer = 0.0f;
     bool wasInCollisionThisUpdate = false;
@@ -40,8 +41,10 @@ struct VerletObject {
     VerletObject(Vector2 pos, float radius, bool fixed)
         : currPosition(pos), lastPosition(pos), radius(radius), fixed(fixed) {}
 
-    VerletObject(Vector2 pos, float radius, bool fixed, int32_t body_id)
-        : currPosition(pos), lastPosition(pos), radius(radius), fixed(fixed), bodyID(body_id) {}
+    VerletObject(Vector2 pos, float radius, bool fixed, Color default_color, int32_t body_id)
+        : currPosition(pos), lastPosition(pos), radius(radius), fixed(fixed), defaultColor(default_color), bodyID(body_id) {
+            color = default_color;
+        }
 
     void UpdatePosition(float dt) {
         if (fixed) {acceleration = {0.0f, 0.0f}; return;}
@@ -75,7 +78,16 @@ struct VerletObject {
         }
 
         acceleration = {0.0f, 0.0f};
+        UpdateColor();
         wasInCollisionThisUpdate = false;
+    }
+
+    void UpdateColor() {
+        if (wasInCollisionThisUpdate) {
+            color = PINK;
+        } else {
+            color = defaultColor;
+        }
     }
 
     void UpdateSleepState(float speed, float dt) {
@@ -93,7 +105,7 @@ struct VerletObject {
         if (!isSleeping) {
             isSleeping = true;
             lastPosition = currPosition;
-            color = GRAY;
+            defaultColor = GRAY;
         }
     }
 
@@ -101,7 +113,7 @@ struct VerletObject {
         if (isSleeping) {
             sleepTimer = 0.0f;
             isSleeping = false;
-            color = WHITE;
+            defaultColor = WHITE;
         }
     }
 
@@ -175,8 +187,9 @@ struct SpawnCommand {
     Type type = FREE_OBJECT;
 
     Vector2 pos;
-    float spawnAngle;
     float radius;
+    Color defaultColor;
+    float spawnAngle;
     float speed;
     float spawnDelay;
 
@@ -185,13 +198,14 @@ struct SpawnCommand {
     bool isFixed = false;
 
     // Constructor for single objects
-    SpawnCommand(Vector2 position_, float spawn_angle, float radius_, float speed_, float spawn_delay) 
-        : type (FREE_OBJECT), pos(position_), spawnAngle(spawn_angle), radius(radius_), speed(speed_), spawnDelay(spawn_delay) {}
+    SpawnCommand(Vector2 position_,  float radius_, Color default_color, float spawn_angle, float speed_, float spawn_delay) 
+        : type (FREE_OBJECT), pos(position_), radius(radius_), defaultColor(default_color),
+        spawnAngle(spawn_angle), speed(speed_), spawnDelay(spawn_delay) {}
 
     // Constructor for Rope Segments
-    SpawnCommand(Type type_, Vector2 position, float radius_, float spawn_delay, 
+    SpawnCommand(Type type_, Vector2 position, float radius_, Color default_color, float spawn_delay, 
         int32_t body_id, int32_t segment_index, bool fixed_ = false)
-        : type(type_), pos(position), spawnAngle(0), radius(radius_), speed(0),
+        : type(type_), pos(position), spawnAngle(0), radius(radius_), defaultColor(default_color), speed(0),
         spawnDelay(spawn_delay), bodyID(body_id), segmentIndex(segment_index), isFixed(fixed_) {}
 };
 
@@ -199,7 +213,9 @@ struct SpawnCommand {
 
 struct Solver { 
 private:
-    float targetPhysicsHz = 240.0f;
+    // float targetPhysicsHz = 240.0f;
+    float targetPhysicsHz = 960.0f;
+    // float targetPhysicsHz = 480.0f;
     float physicsDeltatime = 1.0 / targetPhysicsHz;
     float time = 0.0f;
     int physicsSteps = 0;
@@ -240,8 +256,8 @@ public:
             4a. Gravity
             4b. Object Update Position
             4c. Apply Boarders */
-        SolveCollisionsNaive();
         UpdateConstraints();
+        SolveCollisionsNaive();
         //UpdateSoftBodies
         UpdateObjects();
     }
@@ -314,8 +330,8 @@ public:
         obj.currPosition = Vector2Subtract(obj.currPosition, Vector2Scale(collisionNormal, 0.2f * RESPONSE_COEF));
     }
 
-    VerletObject& AddObject(Vector2 pos, float radius, bool fixed = false, int32_t bodyID = -1) {
-        return objects.emplace_back(pos, radius, fixed, bodyID);
+    VerletObject& AddObject(Vector2 pos, float radius, Color color, bool fixed = false, int32_t bodyID = -1) {
+        return objects.emplace_back(pos, radius, fixed, color, bodyID);
     }
 
     VerletConstraint& AddConstraint(int32_t obj1Index, int32_t obj2Index, float maxLength, float minLength) {
@@ -434,8 +450,9 @@ public:
         for (int i = 0; i < length; i++) {
             Vector2 segmentPos = {startPos.x, startPos.y + i * segmentSpacing};
             bool isFixed = (i == 0);
+            Color defaultColor = isFixed ? RED : BLUE;
 
-            SpawnCommand cmd(SpawnCommand::ROPE_SEGMENT, segmentPos, radius, spawnDelay, ropeBodyID, i, isFixed);
+            SpawnCommand cmd(SpawnCommand::ROPE_SEGMENT, segmentPos, radius, defaultColor, spawnDelay, ropeBodyID, i, isFixed);
             AddSpawnCommand(cmd);
         }
     }
@@ -451,7 +468,7 @@ public:
         if (GetTime() - lastSpawnedTime < cmd.spawnDelay) {return;}
 
         if (cmd.type == SpawnCommand::FREE_OBJECT) {
-            SpawnFreeObject(cmd.pos, cmd.spawnAngle, cmd.radius, cmd.speed);
+            SpawnFreeObject(cmd.pos, cmd.spawnAngle, cmd.radius, cmd.defaultColor, cmd.speed);
         } else if (cmd.type == SpawnCommand::ROPE_SEGMENT) {
             ProcessRopeSegment(cmd);
         }
@@ -460,21 +477,20 @@ public:
         lastSpawnedTime = GetTime();
     }
     
-    void SpawnFreeObject(Vector2 pos, float spawnAngle, float radius, float speed) {
+    void SpawnFreeObject(Vector2 pos, float spawnAngle, float radius, Color defaultColor, float speed) {
         Vector2 angle = {cos(spawnAngle), sin(spawnAngle)};
-        VerletObject& obj = solver.AddObject(pos, radius);
+        VerletObject& obj = solver.AddObject(pos, radius, defaultColor);
         Vector2 velocity = Vector2Scale(angle, speed);
         solver.SetObjectVelocity(obj, velocity);
     }
 
     void ProcessRopeSegment(SpawnCommand cmd) {
-        VerletObject& obj = solver.AddObject(cmd.pos, cmd.radius, cmd.isFixed, cmd.bodyID);
-        obj.color = cmd.isFixed ? RED : BLUE;
+        VerletObject& obj = solver.AddObject(cmd.pos, cmd.radius, cmd.defaultColor, cmd.isFixed, cmd.bodyID);
 
         int32_t currentIndex = solver.objects.size() - 1;
 
         if (cmd.segmentIndex > 0 && lastRopeSegmentIndex != -1) {
-            float maxLength = cmd.radius * 2.5f;
+            float maxLength = cmd.radius * 2.0f;
             float minLength = cmd.radius * 1.5f;
             solver.AddConstraint(lastRopeSegmentIndex, currentIndex, maxLength, minLength);
         }
@@ -491,7 +507,7 @@ public:
             if (obj.fixed) {
                 isDragging = true;
                 dragOffset = Vector2Subtract(mousePos, obj.currPosition);
-                obj.color = GREEN;
+                obj.defaultColor = GREEN;
             }
         }
 
@@ -504,7 +520,7 @@ public:
 
         if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
             if (isDragging && selectedObjectIndex != 1) {
-                solver.objects[selectedObjectIndex].color = RED;
+                solver.objects[selectedObjectIndex].defaultColor = RED;
             }
             isDragging = false;
             selectedObjectIndex = -1;
@@ -528,16 +544,20 @@ public:
         
         bool gameStarted = false;
         
-        QueueRope(10, {500.0f, 200.0f}, 10.0f, 0.01f);
+        QueueRope(20, {500.0f, 200.0f}, 10.0f, 0.01f);
 
         for (int i = 0; i < 10; i++) {
-            SpawnCommand cmd = SpawnCommand({50.0f, 50.0f}, 2.0f * PI, 10.0f, 700.0f, 0.15f);
+            SpawnCommand cmd = SpawnCommand({50.0f, 50.0f}, 10.0f, WHITE, 2.0f * PI, 700.0f, 0.15f);
             AddSpawnCommand(cmd);
         }
         for (int i = 0; i < 10; i++) {
-            SpawnCommand cmd = SpawnCommand({50.0f, 50.0f}, 2.0f * PI, 20.0f, 300.0f, 0.8f);
+            SpawnCommand cmd = SpawnCommand({50.0f, 50.0f}, 20.0f, WHITE, 2.0f * PI, 300.0f, 0.8f);
             AddSpawnCommand(cmd);
         }
+        // SpawnCommand leftCmd = SpawnCommand({50.0f, 150.0f}, 0.0f, 20.0f, 9000.0f, 0.001f);
+        // AddSpawnCommand(leftCmd);
+        // SpawnCommand rightCmd = SpawnCommand({1000.0f, 150.0f}, PI, 20.0f, 9000.0f, 0.001f);
+        // AddSpawnCommand(rightCmd);
 
         while (!WindowShouldClose() && !gameStarted) {
             renderer.Render(solver);
