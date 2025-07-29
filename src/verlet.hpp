@@ -354,13 +354,36 @@ public:
 
 
 struct Renderer {
-    void Render(int width, int height, Solver& solver) {
+public:
+    Renderer(int game_width, int game_height) 
+        : gameWidth(game_width), gameHeight(game_height) {
+            startButton = {gameWidth/2.0f - 100.0f, gameHeight/2.0f - 25, 200, 50};
+        }
+
+    void Render(Solver& solver) {
         BeginDrawing();
         ClearBackground(RAYWHITE);
-        RenderBackground(width, height);
+        RenderBackground();
+
+        if (!gameStarted) {RenderStartButton(gameWidth, gameHeight);}
+
         RenderObjects(solver);
         EndDrawing();
     }
+
+    bool StartButtonContained(Vector2 mousePos) {
+        return CheckCollisionPointRec(mousePos, startButton);
+    }
+
+    void StartGame() {
+        gameStarted = true;
+    }
+
+private:
+    int gameWidth;
+    int gameHeight;
+    Rectangle startButton;
+    bool gameStarted = false;
 
     void RenderObjects(const Solver& solver) const {
         const auto& objects = solver.objects;
@@ -369,8 +392,17 @@ struct Renderer {
         }
     }
 
-    void RenderBackground(int width, int height) {
-        DrawRectangle(0, 0, width, height, BLACK);
+    void RenderBackground() {
+        DrawRectangle(0, 0, gameWidth, gameHeight, BLACK);
+    }
+
+    void RenderStartButton(int width, int height) {
+        DrawRectangleRec(startButton, GRAY);
+        DrawRectangleLinesEx(startButton, 2, WHITE);
+
+        const char* text = "START GAME";
+        int textWidth = MeasureText(text, 20);
+        DrawText(text, startButton.x + (startButton.width - textWidth)/2, startButton.y + 15, 20, BLACK);
     }
 };
 
@@ -392,8 +424,8 @@ private:
     bool isDragging = false;
 
 public:
-    Game(int worldW, int worldH)
-        : worldWidth(worldW), worldHeight(worldH), solver(Solver({float(worldW), float(worldH)})), renderer(Renderer()) {}
+    Game(int world_width, int world_height)
+        : worldWidth(world_width), worldHeight(world_height), solver(Solver({float(world_width), float(world_height)})), renderer(Renderer(world_width, world_height)) {}
 
     void QueueRope(int32_t length, Vector2 startPos, float radius, float spawnDelay) {
         int32_t ropeBodyID = solver.bodyCount++;
@@ -493,6 +525,9 @@ public:
     void MainLoop() {
         SetTraceLogLevel(LOG_WARNING);
         InitWindow(worldWidth, worldHeight, "postHuman");
+        
+        bool gameStarted = false;
+        
         QueueRope(10, {500.0f, 200.0f}, 10.0f, 0.01f);
 
         for (int i = 0; i < 10; i++) {
@@ -503,17 +538,23 @@ public:
             SpawnCommand cmd = SpawnCommand({50.0f, 50.0f}, 2.0f * PI, 20.0f, 300.0f, 0.8f);
             AddSpawnCommand(cmd);
         }
-        // SpawnCommand smallBall = SpawnCommand({150.0f, 150.0f}, 0.0f, 10.0f, 1000.0f, 0.0f);
-        // SpawnCommand bigBall = SpawnCommand({600.0f, 150.0f}, PI, 20.0f, 1000.0f, 0.0f);
-        // AddSpawnCommand(smallBall);
-        // AddSpawnCommand(bigBall);
+
+        while (!WindowShouldClose() && !gameStarted) {
+            renderer.Render(solver);
+
+            if (renderer.StartButtonContained(GetMousePosition()) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                gameStarted = true;
+                renderer.StartGame();
+            }
+        }
+
         while (!WindowShouldClose()) {
             HandleMouseInput();
             ProcessSpawnQueue();
             solver.UpdateNaive();
-            renderer.Render(worldWidth, worldHeight, solver);
+            renderer.Render(solver);
         }
         CloseWindow();
-        printf("Size of Constraints: %u\n", solver.constraints.size());
+        // printf("Size of Constraints: %u\n", solver.constraints.size());
     }
 };
