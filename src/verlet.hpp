@@ -142,7 +142,8 @@ struct VerletConstraint {
         : obj1Index(obj_1_index), obj2Index(obj_2_index), maxTargetDistance(max_target_distance), minTargetDistance(min_target_distance) {}
 
     void apply(std::vector<VerletObject>& objects) {
-        if (obj1Index >= objects.size() || obj2Index >= objects.size() || obj1Index < 0 || obj2Index < 0) {
+        int32_t objectsSize = static_cast<int32_t>(objects.size());
+        if (obj1Index >= objectsSize || obj2Index >= objectsSize || obj1Index < 0 || obj2Index < 0) {
             return;
         }
 
@@ -183,8 +184,8 @@ struct VerletConstraint {
 };
 
 struct SpawnCommand {
-    enum Type { FREE_OBJECT, ROPE_SEGMENT };
-    Type type = FREE_OBJECT;
+    enum CommandType { FREE_OBJECT, ROPE_SEGMENT };
+    CommandType type = FREE_OBJECT;
 
     Vector2 pos;
     float radius;
@@ -197,15 +198,10 @@ struct SpawnCommand {
     int32_t segmentIndex = -1;
     bool isFixed = false;
 
-    // Constructor for single objects
-    SpawnCommand(Vector2 position_,  float radius_, Color default_color, float spawn_angle, float speed_, float spawn_delay) 
-        : type (FREE_OBJECT), pos(position_), radius(radius_), defaultColor(default_color),
-        spawnAngle(spawn_angle), speed(speed_), spawnDelay(spawn_delay) {}
-
-    // Constructor for Rope Segments
-    SpawnCommand(Type type_, Vector2 position, float radius_, Color default_color, float spawn_delay, 
+    // General Constructor for all types, types will be processed in they type processing function in Game.
+    SpawnCommand(CommandType type_, Vector2 position_, float radius_, Color default_color, float spawn_angle, float speed, float spawn_delay, 
         int32_t body_id, int32_t segment_index, bool fixed_ = false)
-        : type(type_), pos(position), spawnAngle(0), radius(radius_), defaultColor(default_color), speed(0),
+        : type(type_), pos(position_), spawnAngle(spawn_angle), radius(radius_), defaultColor(default_color), speed(speed),
         spawnDelay(spawn_delay), bodyID(body_id), segmentIndex(segment_index), isFixed(fixed_) {}
 };
 
@@ -422,11 +418,92 @@ private:
     }
 };
 
+struct Tentacle {
+    std::vector<int32_t> objectIndices;
+    std::vector<int32_t> constraintIndices;
+    float baseLength;
+    
 
+    void QueueTentacle(Solver& solver, int32_t length, Vector2 startPos, float radius) {
+        int32_t tentacleBodyID = solver.bodyCount++;
+        const float segmentSpacing = radius * 2.2f;
+
+        for (int i = 0; i < length; i++) {
+            Vector2 segmentPos = {startPos.x, startPos.y - i * segmentSpacing};
+            bool isFixed = (i == 0);
+            Color defaultColor = isFixed ? RED : BLUE;
+
+            // SpawnCommand cmd(SpawnCommand::)
+        }
+
+    }
+};
+
+struct Spawner {
+    std::queue<SpawnCommand> spawnQueue;
+    float lastSpawnedTime = 0.0f;
+
+    int32_t lastRopeSegmentIndex = -1;
+
+    void QueueRope(Solver& solver, int32_t length, Vector2 startPos, float radius, float spawnDelay) {
+        int32_t ropeBodyID = solver.bodyCount++;
+        const float segmentSpacing = radius * 2.2f;
+
+        for (int i = 0; i < length; i++) {
+            Vector2 segmentPos = {startPos.x, startPos.y + i * segmentSpacing};
+            bool isFixed = (i == 0);
+            Color defaultColor = isFixed ? RED : BLUE;
+
+            SpawnCommand cmd(SpawnCommand::ROPE_SEGMENT, segmentPos, radius, defaultColor, 0.0f, 0.0f, spawnDelay, ropeBodyID, i, isFixed);
+            AddSpawnCommand(cmd);
+        }
+    }
+
+    void AddSpawnCommand(SpawnCommand command) {
+        spawnQueue.push(command);
+    }
+
+    void ProcessSpawnQueue(Solver& solver) {
+        if (spawnQueue.empty()) {return;}
+        SpawnCommand& cmd = spawnQueue.front();
+
+        if (GetTime() - lastSpawnedTime < cmd.spawnDelay) {return;}
+
+        if (cmd.type == SpawnCommand::FREE_OBJECT) {
+            SpawnFreeObject(solver, cmd.pos, cmd.spawnAngle, cmd.radius, cmd.defaultColor, cmd.speed);
+        } else if (cmd.type == SpawnCommand::ROPE_SEGMENT) {
+            SpawnRopeSegment(solver, cmd);
+        }
+
+        spawnQueue.pop();
+        lastSpawnedTime = GetTime();
+    }
+
+    void SpawnFreeObject(Solver& solver, Vector2 pos, float spawnAngle, float radius, Color defaultColor, float speed) {
+        Vector2 angle = {cos(spawnAngle), sin(spawnAngle)};
+        VerletObject& obj = solver.AddObject(pos, radius, defaultColor);
+        Vector2 velocity = Vector2Scale(angle, speed);
+        solver.SetObjectVelocity(obj, velocity);
+    }
+
+    void SpawnRopeSegment(Solver& solver, SpawnCommand cmd) {
+        VerletObject& obj = solver.AddObject(cmd.pos, cmd.radius, cmd.defaultColor, cmd.isFixed, cmd.bodyID);
+
+        int32_t currentIndex = solver.objects.size() - 1;
+
+        if (cmd.segmentIndex > 0 && lastRopeSegmentIndex != -1) {
+            float maxLength = cmd.radius * 2.0f;
+            float minLength = cmd.radius * 1.5f;
+            solver.AddConstraint(lastRopeSegmentIndex, currentIndex, maxLength, minLength);
+        }
+        lastRopeSegmentIndex = currentIndex;
+    }
+};
 
 struct Game {
 private:
     Solver solver;
+    Spawner spawner;
     Renderer renderer;
     int worldWidth;
     int worldHeight;
@@ -441,61 +518,8 @@ private:
 
 public:
     Game(int world_width, int world_height)
-        : worldWidth(world_width), worldHeight(world_height), solver(Solver({float(world_width), float(world_height)})), renderer(Renderer(world_width, world_height)) {}
-
-    void QueueRope(int32_t length, Vector2 startPos, float radius, float spawnDelay) {
-        int32_t ropeBodyID = solver.bodyCount++;
-        const float segmentSpacing = radius * 2.2f;
-
-        for (int i = 0; i < length; i++) {
-            Vector2 segmentPos = {startPos.x, startPos.y + i * segmentSpacing};
-            bool isFixed = (i == 0);
-            Color defaultColor = isFixed ? RED : BLUE;
-
-            SpawnCommand cmd(SpawnCommand::ROPE_SEGMENT, segmentPos, radius, defaultColor, spawnDelay, ropeBodyID, i, isFixed);
-            AddSpawnCommand(cmd);
-        }
-    }
-
-    void AddSpawnCommand(SpawnCommand command) {
-        spawnQueue.push(command);
-    }
-    
-    void ProcessSpawnQueue() {
-        if (spawnQueue.empty()) {return;}
-        SpawnCommand& cmd = spawnQueue.front();
-
-        if (GetTime() - lastSpawnedTime < cmd.spawnDelay) {return;}
-
-        if (cmd.type == SpawnCommand::FREE_OBJECT) {
-            SpawnFreeObject(cmd.pos, cmd.spawnAngle, cmd.radius, cmd.defaultColor, cmd.speed);
-        } else if (cmd.type == SpawnCommand::ROPE_SEGMENT) {
-            ProcessRopeSegment(cmd);
-        }
-
-        spawnQueue.pop();
-        lastSpawnedTime = GetTime();
-    }
-    
-    void SpawnFreeObject(Vector2 pos, float spawnAngle, float radius, Color defaultColor, float speed) {
-        Vector2 angle = {cos(spawnAngle), sin(spawnAngle)};
-        VerletObject& obj = solver.AddObject(pos, radius, defaultColor);
-        Vector2 velocity = Vector2Scale(angle, speed);
-        solver.SetObjectVelocity(obj, velocity);
-    }
-
-    void ProcessRopeSegment(SpawnCommand cmd) {
-        VerletObject& obj = solver.AddObject(cmd.pos, cmd.radius, cmd.defaultColor, cmd.isFixed, cmd.bodyID);
-
-        int32_t currentIndex = solver.objects.size() - 1;
-
-        if (cmd.segmentIndex > 0 && lastRopeSegmentIndex != -1) {
-            float maxLength = cmd.radius * 2.0f;
-            float minLength = cmd.radius * 1.5f;
-            solver.AddConstraint(lastRopeSegmentIndex, currentIndex, maxLength, minLength);
-        }
-        lastRopeSegmentIndex = currentIndex;
-    }
+        : worldWidth(world_width), worldHeight(world_height), solver(Solver({float(world_width), float(world_height)})), 
+        renderer(Renderer(world_width, world_height)), spawner(Spawner()) {}
 
     void HandleMouseInput() {
         Vector2 mousePos = GetMousePosition();
@@ -544,15 +568,15 @@ public:
         
         bool gameStarted = false;
         
-        QueueRope(20, {500.0f, 200.0f}, 10.0f, 0.01f);
+        spawner.QueueRope(solver, 20, {500.0f, 200.0f}, 10.0f, 0.01f);
 
         for (int i = 0; i < 10; i++) {
-            SpawnCommand cmd = SpawnCommand({50.0f, 50.0f}, 10.0f, WHITE, 2.0f * PI, 700.0f, 0.15f);
-            AddSpawnCommand(cmd);
+            SpawnCommand cmd = SpawnCommand(SpawnCommand::FREE_OBJECT, {50.0f, 50.0f}, 10.0f, WHITE, 2.0f * PI, 700.0f, 0.15f, -1, -1, false);
+            spawner.AddSpawnCommand(cmd);
         }
         for (int i = 0; i < 10; i++) {
-            SpawnCommand cmd = SpawnCommand({50.0f, 50.0f}, 20.0f, WHITE, 2.0f * PI, 300.0f, 0.8f);
-            AddSpawnCommand(cmd);
+            SpawnCommand cmd = SpawnCommand(SpawnCommand::FREE_OBJECT, {50.0f, 50.0f}, 20.0f, WHITE, 2.0f * PI, 700.0f, 0.15f, -1, -1, false);
+            spawner.AddSpawnCommand(cmd);
         }
         // SpawnCommand leftCmd = SpawnCommand({50.0f, 150.0f}, 0.0f, 20.0f, 9000.0f, 0.001f);
         // AddSpawnCommand(leftCmd);
@@ -570,11 +594,10 @@ public:
 
         while (!WindowShouldClose()) {
             HandleMouseInput();
-            ProcessSpawnQueue();
+            spawner.ProcessSpawnQueue(solver);
             solver.UpdateNaive();
             renderer.Render(solver);
         }
         CloseWindow();
-        // printf("Size of Constraints: %u\n", solver.constraints.size());
     }
 };
