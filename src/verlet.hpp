@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <cmath>
 #include <cstdint>
+#include <stdexcept>
+#include <cstdio>
 
 constexpr int DEFAULT_SUBSTEPS = 8;
 constexpr int JAKOBSEN_ITERATIONS = 10;
@@ -247,6 +249,33 @@ struct RopeInstruction : public SpawnInstruction {
     void Execute(Solver& solver, Vector2 startPos) override;
 };
 
+struct TentacleInstruction : public SpawnInstruction {
+    int32_t bodyID;             // The tentacle body's ID
+    int32_t length;             // Number of objects per side (1 additional object acting as the tip)
+    float radius;               // Radius of the individual Objects
+    Color anchorColor;          // Color of the anchored obejcts, usually attached to the main body or acting as a base.
+    Color controlColor;         // Color of the tentacle controlling objects
+    Color defaultColor;         // Default color of the objects
+    float overlapScalar;        // Scalar for how much overlap each object has. >= 2 means no overlap, 1 means object center is on edge of next objects
+    float baseWidth;            // Distance the two objects acting as a base will be apart
+    int32_t controlPoints;      // Number of control points that each tentacle will get.
+
+    TentacleInstruction(int32_t body_id, int32_t length_, float radius_, Color anchor_color, Color default_color, Color control_color,
+        float overlap_scalar, float base_width, int32_t control_points)
+        : bodyID(body_id), length(length_), radius(radius_), anchorColor(anchor_color), defaultColor(default_color), controlColor(control_color),
+        overlapScalar(overlap_scalar), baseWidth(base_width), controlPoints(control_points) {
+            ValidateParameters(length, radius, overlapScalar, baseWidth);
+            if (controlPoints > length - 1) {controlPoints = length - 1;}
+        }
+    
+    void Execute(Solver& solver, Vector2 startPos) override;
+
+    static void ValidateParameters(int32_t length, float radius, float overlapScalar, float baseWidth);
+
+    void GenerateSupportConstraints(Solver& solver, std::vector<int32_t>& rightObjIndices, std::vector<int32_t>& leftObjIndices, 
+    Vector2 rightSideSegmentPos, Vector2 leftSideSegmentPos, int32_t rightObjIndex, int32_t leftObjIndex, int32_t relativeAnchorPosition);
+};
+
 
 
 struct Solver { 
@@ -368,9 +397,10 @@ public:
         obj.currPosition = Vector2Subtract(obj.currPosition, Vector2Scale(collisionNormal, 0.2f * RESPONSE_COEF));
     }
 
-    // Eventually I should switch this over to returning the index of the object rather than a reference to it.
-    VerletObject& AddObject(Vector2 pos, float radius, Color color, bool fixed = false, int32_t bodyID = -1) {
-        return objects.emplace_back(pos, radius, fixed, color, bodyID);
+    // Returns the index of created object
+    int32_t AddObject(Vector2 pos, float radius, Color color, bool fixed = false, int32_t bodyID = -1) {
+        objects.emplace_back(pos, radius, fixed, color, bodyID);
+        return static_cast<int32_t>(objects.size() - 1);
     }
 
     VerletConstraint& AddConstraint(int32_t obj1Index, int32_t obj2Index, float maxLength, float minLength) {
@@ -401,7 +431,8 @@ public:
         ApplyBorders(obj);
     }
 
-    void SetObjectVelocity(VerletObject& obj, Vector2 velocity) {
+    void SetObjectVelocity(int32_t objIndex, Vector2 velocity) {
+        VerletObject& obj = objects[objIndex];
         obj.UpdateVelocity(velocity, physicsDeltatime);
     }
 };
@@ -409,9 +440,9 @@ public:
 // Implementation of Execute Methods after solver has been declared
 void FreeObjectInstruction::Execute(Solver& solver, Vector2 startPos) {
     Vector2 angle = {cos(spawnAngle), sin(spawnAngle)};
-    VerletObject& obj = solver.AddObject(startPos, radius, color);
+    int32_t objIndex = solver.AddObject(startPos, radius, color);
     Vector2 velocity = Vector2Scale(angle, speed);
-    solver.SetObjectVelocity(obj, velocity);
+    solver.SetObjectVelocity(objIndex, velocity);
 }
 
 void RopeInstruction::Execute(Solver& solver, Vector2 startPos) {
@@ -422,7 +453,7 @@ void RopeInstruction::Execute(Solver& solver, Vector2 startPos) {
         bool isFixed = (i == 0);
         Color color = isFixed ? fixedColor : defaultColor;
 
-        VerletObject& obj = solver.AddObject(segmentPos, radius, color, isFixed, bodyID);
+        int32_t objIndex = solver.AddObject(segmentPos, radius, color, isFixed, bodyID);
 
         int32_t currentIndex = static_cast<int32_t>(solver.objects.size()) - 1;
 
@@ -433,6 +464,106 @@ void RopeInstruction::Execute(Solver& solver, Vector2 startPos) {
         }
         lastRopeSegmentIndex = currentIndex;
     }
+}
+
+void TentacleInstruction::ValidateParameters(int32_t length, float radius, float overlapScalar, float baseWidth) {
+    if (length <= 0) {
+        throw std::invalid_argument("Tentacle length must be positive");
+    }
+    if (radius <= 0) {
+        throw std::invalid_argument("Tentacle radius must be positive");
+    }
+    if (baseWidth <= 0) {
+        throw std::invalid_argument("Tentacle baseWidth must be positive");
+    }
+    if (overlapScalar <= 0) {
+        throw std::invalid_argument("Tentacle overlapScalar must be positive");
+    }
+
+    float halfBaseWidth = baseWidth / 2;
+    float sideLength = length * radius * overlapScalar;
+
+    if (sideLength <= halfBaseWidth) {
+        char errorMsg[256];
+        snprintf(errorMsg, sizeof(errorMsg),
+                "Invalid tentacle geometry: sideLength (%.2f) must be greater than halfBaseWidth (%.2f). "
+                "Current parameters: length=%d, radius=%.2f, overlapScalar=%.2f, baseWidth=%.2f",
+                sideLength, halfBaseWidth, length, radius, overlapScalar, baseWidth);
+        throw std::invalid_argument(errorMsg);
+    }
+}
+
+void TentacleInstruction::Execute(Solver& solver, Vector2 startPos) {
+
+    std::vector<int32_t> leftObjIndices;
+    std::vector<int32_t> rightObjIndices;
+
+    float maxLength = radius * overlapScalar * 1.05f;
+    float minLength = radius * overlapScalar * 0.95f;
+    
+    float halfBaseWidth = baseWidth / 2;
+    float sideLength = length * radius * overlapScalar;
+
+    float tipOffsetY = sqrt(sideLength * sideLength - halfBaseWidth * halfBaseWidth);
+
+    Vector2 leftSideStart = {startPos.x - halfBaseWidth, startPos.y};
+    Vector2 rightSideStart = {startPos.x + halfBaseWidth, startPos.y};
+    Vector2 tentacleTipPos = {startPos.x, startPos.y - tipOffsetY};
+
+    Vector2 leftSideNormal = Vector2Normalize(Vector2Subtract(tentacleTipPos, leftSideStart));
+    Vector2 rightSideNormal = Vector2Normalize(Vector2Subtract(tentacleTipPos, rightSideStart));
+
+    for (int i = 0; i < length; i++) {
+        Color color = defaultColor;
+        bool isFixed = false;
+
+        if (i == 0) {
+            color = anchorColor;
+            isFixed = true;
+        }
+
+        float segmentScale = sideLength * (float(i) / float(length));
+        Vector2 leftSideSegmentPos = Vector2Add(leftSideStart, Vector2Scale(leftSideNormal, segmentScale));
+        Vector2 rightSideSegmentPos = Vector2Add(rightSideStart, Vector2Scale(rightSideNormal, segmentScale));
+
+        int32_t leftObjIndex = solver.AddObject(leftSideSegmentPos, radius, color, isFixed, bodyID);
+        int32_t rightObjIndex = solver.AddObject(rightSideSegmentPos, radius, color, isFixed, bodyID);
+
+        if (i > 0) {
+            solver.AddConstraint(leftObjIndices[leftObjIndices.size() - 1], leftObjIndex, maxLength, minLength);
+            solver.AddConstraint(rightObjIndices[rightObjIndices.size() - 1], rightObjIndex, maxLength, minLength);
+        }
+
+        for (int32_t j = 1; j < 4; j++) {
+            if (leftObjIndices.size() > j && rightObjIndices.size() > j) {
+                GenerateSupportConstraints(solver, rightObjIndices, leftObjIndices, rightSideSegmentPos, leftSideSegmentPos,
+                                           rightObjIndex, leftObjIndex, j);
+            }
+        }
+
+        float distance = Vector2Distance(leftSideSegmentPos, rightSideSegmentPos);
+        solver.AddConstraint(leftObjIndex, rightObjIndex, distance * 1.1f, distance * 0.9f);
+
+        leftObjIndices.push_back(leftObjIndex);
+        rightObjIndices.push_back(rightObjIndex);
+
+    }
+}
+
+void TentacleInstruction::GenerateSupportConstraints(Solver& solver, std::vector<int32_t>& rightObjIndices, std::vector<int32_t>& leftObjIndices, 
+    Vector2 rightSideSegmentPos, Vector2 leftSideSegmentPos, int32_t rightObjIndex, int32_t leftObjIndex, int32_t relativeAnchorPosition) {        
+
+        int32_t rightAnchorIndex = rightObjIndices[rightObjIndices.size() - (relativeAnchorPosition + 1)];
+        float constraintDistanceRL = Vector2Distance(solver.objects[rightAnchorIndex].currPosition, leftSideSegmentPos);
+        float maxDistanceRL = constraintDistanceRL * 1.05f;
+        float minDistanceRL = constraintDistanceRL * 0.95f;
+        solver.AddConstraint(rightAnchorIndex, leftObjIndex, maxDistanceRL, minDistanceRL);
+        
+        int32_t leftAnchorIndex = leftObjIndices[leftObjIndices.size() - (relativeAnchorPosition + 1)];
+        float constraintDistanceLR = Vector2Distance(solver.objects[leftAnchorIndex].currPosition, rightSideSegmentPos);
+        float maxDistanceLR = constraintDistanceLR * 1.05f;
+        float minDistanceLR = constraintDistanceLR * 0.95f;
+        solver.AddConstraint(leftAnchorIndex, rightObjIndex, maxDistanceLR, minDistanceLR);
 }
 
 struct Renderer {
@@ -485,27 +616,6 @@ private:
         const char* text = "START GAME";
         int textWidth = MeasureText(text, 20);
         DrawText(text, startButton.x + (startButton.width - textWidth)/2, startButton.y + 15, 20, BLACK);
-    }
-};
-
-struct Tentacle {
-    std::vector<int32_t> objectIndices;
-    std::vector<int32_t> constraintIndices;
-    float baseLength;
-    
-
-    void QueueTentacle(Solver& solver, int32_t length, Vector2 startPos, float radius) {
-        int32_t tentacleBodyID = solver.bodyCount++;
-        const float segmentSpacing = radius * 2.2f;
-
-        for (int i = 0; i < length; i++) {
-            Vector2 segmentPos = {startPos.x, startPos.y - i * segmentSpacing};
-            bool isFixed = (i == 0);
-            Color defaultColor = isFixed ? RED : BLUE;
-
-            // SpawnCommand cmd(SpawnCommand::)
-        }
-
     }
 };
 
@@ -636,15 +746,48 @@ public:
             BLUE,
             10.0f * 2.5f
         );
-
         SpawnCommand ropeCmd(
             SpawnCommand::ROPE,
             {500.0f, 200.0f},
             0.5f,
             std::move(ropeInstruction)
         );
-
         spawner.AddSpawnCommand(std::move(ropeCmd));
+
+        auto rope2Instruction = std::make_unique<RopeInstruction>(
+            solver.bodyCount++,
+            1,
+            15.0f,
+            RED,
+            BLUE,
+            10.0f * 2.5f
+        );
+        SpawnCommand rope2Cmd(
+            SpawnCommand::ROPE,
+            {700.0f, 200.0f},
+            0.5f,
+            std::move(rope2Instruction)
+        );
+        spawner.AddSpawnCommand(std::move(rope2Cmd));
+
+        auto tentacleInstruction = std::make_unique<TentacleInstruction>(
+            solver.bodyCount++,
+            23,
+            10.0f,
+            RED,
+            GREEN,
+            ORANGE,
+            1.8f,
+            100.0f,
+            2
+        );
+        SpawnCommand tentacleCmd(
+            SpawnCommand::TENTACLE,
+            {700.0f, 700.0f},
+            0.5f,
+            std::move(tentacleInstruction)
+        );
+        spawner.AddSpawnCommand(std::move(tentacleCmd));
 
         while (!WindowShouldClose() && !gameStarted) {
             renderer.Render(solver);
