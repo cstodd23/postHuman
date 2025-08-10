@@ -36,6 +36,8 @@ struct VerletObject {
     Color color;
     bool hidden = false;
     bool fixed;
+    bool controlPoint = false;
+    int32_t controlPointID = -1;
     bool isSleeping = false;
     float sleepTimer = 0.0f;
     bool wasInCollisionThisUpdate = false;
@@ -46,6 +48,12 @@ struct VerletObject {
 
     VerletObject(Vector2 pos, float radius, bool fixed, Color default_color, int32_t body_id)
         : currPosition(pos), lastPosition(pos), radius(radius), fixed(fixed), defaultColor(default_color), bodyID(body_id) {
+            color = default_color;
+        }
+    
+    VerletObject(Vector2 pos, float radius, Color default_color, int32_t body_id, int32_t control_point_id)
+        : currPosition(pos), lastPosition(pos), radius(radius), fixed(true), defaultColor(default_color), 
+        bodyID(body_id), controlPoint(true), controlPointID(control_point_id) {
             color = default_color;
         }
 
@@ -192,7 +200,7 @@ struct SpawnInstruction {
 };
 
 struct SpawnCommand {
-    enum BodyType { FREE_OBJECT, ROPE, TENTACLE };
+    enum BodyType { FREE_OBJECT, ROPE, TENTACLE, TENTACLE_MONSTER };
     BodyType bodyType;
     Vector2 startPos;
     float spawnDelay;
@@ -248,32 +256,70 @@ struct RopeInstruction : public SpawnInstruction {
 
     void Execute(Solver& solver, Vector2 startPos) override;
 };
+// Possible names: Cheirops, Armageddon, OneEyeArmy
+
+struct TentacleMonsterInstruction : public SpawnInstruction{
+    int32_t bodyID;                             // The tentacle body's ID
+    float bodyRadius;                           // Radius of main body
+    int32_t numTentacles;                       // Number of Tentacles
+    int32_t tentacleLength;                     // Number of objects per side of the Tentacle
+    float objRadius;                            // Radius of the individual Objects
+    Color defaultColor;                         // Default color of the objects
+    Color anchorColor;                          // Color of the anchored obejcts, usually attached to the main body or acting as a base.
+    Color controlColor;                         // Color of the tentacle controlling objects
+    float overlapScalar;                        // Scalar for how much overlap each object has. >= 2 means no overlap, 1 means object center is on edge of next objects
+    float tentacleBaseWidth;                    // Distance the two objects acting as the tentacle base will be apart
+    int32_t bodyControlID;                      // Tracker for last control ID
+
+    TentacleMonsterInstruction(int32_t body_id, float body_radius, int32_t num_tentacles, int32_t tentacle_length, 
+        float obj_radius, Color default_color, Color anchor_color, Color control_color, float overlap_scalar, float tentacle_base_width)
+
+        : bodyID(body_id), bodyRadius(body_radius), numTentacles(num_tentacles), tentacleLength(tentacle_length),
+        objRadius(obj_radius), defaultColor(default_color), anchorColor(anchor_color), controlColor(control_color), overlapScalar(overlap_scalar),
+        tentacleBaseWidth(tentacle_base_width) {
+
+            ValidateParameters(tentacleLength, objRadius, overlapScalar, tentacleBaseWidth);
+            bodyControlID = bodyID * 10000;
+        }
+
+    static void ValidateParameters(int32_t length, float radius, float overlapScalar, float baseWidth);
+
+    void Execute(Solver& solver, Vector2 startPos) override;
+};
 
 struct TentacleInstruction : public SpawnInstruction {
-    int32_t bodyID;             // The tentacle body's ID
-    int32_t length;             // Number of objects per side (1 additional object acting as the tip)
-    float radius;               // Radius of the individual Objects
-    Color anchorColor;          // Color of the anchored obejcts, usually attached to the main body or acting as a base.
-    Color controlColor;         // Color of the tentacle controlling objects
-    Color defaultColor;         // Default color of the objects
-    float overlapScalar;        // Scalar for how much overlap each object has. >= 2 means no overlap, 1 means object center is on edge of next objects
-    float baseWidth;            // Distance the two objects acting as a base will be apart
-    int32_t controlPoints;      // Number of control points that each tentacle will get.
+    int32_t bodyID;                             // The tentacle body's ID
+    int32_t bodyObjIndex;                       // The body's center point object index
+    float bodyRadius;                           // Radius of main body
+    int32_t length;                             // Number of objects per side
+    float radius;                               // Radius of the individual Objects
+    Color defaultColor;                         // Default color of the objects
+    Color anchorColor;                          // Color of the anchored obejcts, usually attached to the main body or acting as a base.
+    Color controlColor;                         // Color of the tentacle controlling objects
+    float overlapScalar;                        // Scalar for how much overlap each object has. >= 2 means no overlap, 1 means object center is on edge of next objects
+    float baseWidth;                            // Distance the two objects acting as a base will be apart
+    int32_t latestControlID;                    // Tracker for last control ID
+    float maxConstraintLength;
+    float minConstraintLength;
 
-    TentacleInstruction(int32_t body_id, int32_t length_, float radius_, Color anchor_color, Color default_color, Color control_color,
-        float overlap_scalar, float base_width, int32_t control_points)
-        : bodyID(body_id), length(length_), radius(radius_), anchorColor(anchor_color), defaultColor(default_color), controlColor(control_color),
-        overlapScalar(overlap_scalar), baseWidth(base_width), controlPoints(control_points) {
-            ValidateParameters(length, radius, overlapScalar, baseWidth);
-            if (controlPoints > length - 1) {controlPoints = length - 1;}
+    TentacleInstruction(int32_t body_id, int32_t body_obj_idx, float body_radius, int32_t length_, float radius_, 
+        Color default_color, Color anchor_color, Color control_color, float overlap_scalar, float base_width, int32_t start_control_id)
+
+        : bodyID(body_id), bodyObjIndex(body_obj_idx), bodyRadius(body_radius), length(length_), radius(radius_), 
+        defaultColor(default_color), anchorColor(anchor_color), controlColor(control_color), overlapScalar(overlap_scalar), 
+        baseWidth(base_width), latestControlID(start_control_id) {
+            maxConstraintLength = radius * overlapScalar * 1.05f;
+            minConstraintLength = radius * overlapScalar * 0.95f;
         }
     
     void Execute(Solver& solver, Vector2 startPos) override;
 
-    static void ValidateParameters(int32_t length, float radius, float overlapScalar, float baseWidth);
-
     void GenerateSupportConstraints(Solver& solver, std::vector<int32_t>& rightObjIndices, std::vector<int32_t>& leftObjIndices, 
     Vector2 rightSideSegmentPos, Vector2 leftSideSegmentPos, int32_t rightObjIndex, int32_t leftObjIndex, int32_t relativeAnchorPosition);
+
+    void GenerateControlPoints(Solver& solver, Vector2 startPos, float tentacleHeight, int32_t leftAnchorIndex, int32_t rightAnchorIndex);
+
+    int32_t GetNextControlID();
 };
 
 
@@ -291,6 +337,7 @@ private:
     int32_t substeps;
     Vector2 gravity = {0.0f, DEFAULT_GRAVITY};
     Vector2 stageSize;
+    std::unordered_map<int32_t, int32_t> controlPointsToObjects;
     
 public:
     std::vector<VerletObject> objects;
@@ -340,6 +387,8 @@ public:
     void SolveCollision(int32_t obj1_id, int32_t obj2_id) {
         VerletObject& obj1 = objects[obj1_id];
         VerletObject& obj2 = objects[obj2_id];
+
+        if (obj1.controlPoint || obj2.controlPoint) { return; }
 
         if (obj1.bodyID != -1 && obj2.bodyID != -1 && obj1.bodyID == obj2.bodyID) {return;}
 
@@ -397,10 +446,18 @@ public:
         obj.currPosition = Vector2Subtract(obj.currPosition, Vector2Scale(collisionNormal, 0.2f * RESPONSE_COEF));
     }
 
-    // Returns the index of created object
     int32_t AddObject(Vector2 pos, float radius, Color color, bool fixed = false, int32_t bodyID = -1) {
         objects.emplace_back(pos, radius, fixed, color, bodyID);
         return static_cast<int32_t>(objects.size() - 1);
+    }
+
+    int32_t AddControlPoint(Vector2 pos, float radius, Color color, int32_t bodyID, int32_t controlID) {
+        objects.emplace_back(pos, radius, color, bodyID, controlID);
+        int32_t objIndex = static_cast<int32_t>(objects.size() - 1);
+
+        controlPointsToObjects[controlID] = objIndex;
+
+        return objIndex;
     }
 
     VerletConstraint& AddConstraint(int32_t obj1Index, int32_t obj2Index, float maxLength, float minLength) {
@@ -435,6 +492,21 @@ public:
         VerletObject& obj = objects[objIndex];
         obj.UpdateVelocity(velocity, physicsDeltatime);
     }
+
+    bool ValidateObjectIndex(int32_t objIdx) const {
+        return objIdx >= 0 && objIdx < static_cast<int32_t>(objects.size());
+    }
+
+    float GetDistanceBetweenObjectsCurrentPos(int32_t idx1, int32_t idx2) const {
+        if ( !ValidateObjectIndex(idx1) || !ValidateObjectIndex(idx2) ) {
+            char errorMsg[256];
+            snprintf(errorMsg, sizeof(errorMsg),
+                    "Invalid Obj Index in Distance Calculation. idx1=%d, idx2=%d, objects size=%d",
+                    idx1, idx2, static_cast<int32_t>(objects.size()));
+            throw std::invalid_argument(errorMsg);
+        }
+        return Vector2Distance(objects[idx1].currPosition, objects[idx2].currPosition);
+    }
 };
 
 // Implementation of Execute Methods after solver has been declared
@@ -466,7 +538,7 @@ void RopeInstruction::Execute(Solver& solver, Vector2 startPos) {
     }
 }
 
-void TentacleInstruction::ValidateParameters(int32_t length, float radius, float overlapScalar, float baseWidth) {
+void TentacleMonsterInstruction::ValidateParameters(int32_t length, float radius, float overlapScalar, float baseWidth) {
     if (length <= 0) {
         throw std::invalid_argument("Tentacle length must be positive");
     }
@@ -493,34 +565,57 @@ void TentacleInstruction::ValidateParameters(int32_t length, float radius, float
     }
 }
 
-void TentacleInstruction::Execute(Solver& solver, Vector2 startPos) {
+void TentacleMonsterInstruction::Execute(Solver& solver, Vector2 startPos) {
+    int32_t bodyControlIdx = solver.AddControlPoint(startPos, objRadius, controlColor, bodyID, bodyControlID);
 
+    Vector2 tentacleStartPos = Vector2Add(startPos, {0.0f, bodyRadius});
+
+    for (int32_t i = 0; i < numTentacles; i++) {
+        auto instruction = std::make_unique<TentacleInstruction>(
+            bodyID,
+            bodyControlIdx,
+            bodyRadius,
+            tentacleLength,
+            objRadius,
+            defaultColor,
+            anchorColor,
+            controlColor,
+            overlapScalar,
+            tentacleBaseWidth,
+            bodyControlID + (1000 * i)
+        );
+
+        instruction->Execute(solver, tentacleStartPos);
+    }
+}
+
+void TentacleInstruction::Execute(Solver& solver, Vector2 startPos) {
     std::vector<int32_t> leftObjIndices;
     std::vector<int32_t> rightObjIndices;
-
-    float maxLength = radius * overlapScalar * 1.05f;
-    float minLength = radius * overlapScalar * 0.95f;
     
     float halfBaseWidth = baseWidth / 2;
     float sideLength = length * radius * overlapScalar;
 
-    float tipOffsetY = sqrt(sideLength * sideLength - halfBaseWidth * halfBaseWidth);
+    float tentacleHeight = sqrt(sideLength * sideLength - halfBaseWidth * halfBaseWidth);
 
     Vector2 leftSideStart = {startPos.x - halfBaseWidth, startPos.y};
     Vector2 rightSideStart = {startPos.x + halfBaseWidth, startPos.y};
-    Vector2 tentacleTipPos = {startPos.x, startPos.y - tipOffsetY};
+    Vector2 tentacleTipPos = {startPos.x, startPos.y + tentacleHeight};
 
     Vector2 leftSideNormal = Vector2Normalize(Vector2Subtract(tentacleTipPos, leftSideStart));
     Vector2 rightSideNormal = Vector2Normalize(Vector2Subtract(tentacleTipPos, rightSideStart));
+
+    int32_t leftAnchorIndex = -1;
+    int32_t rightAnchorIndex = -1;
 
     for (int i = 0; i < length; i++) {
         Color color = defaultColor;
         bool isFixed = false;
 
-        if (i == 0) {
-            color = anchorColor;
-            isFixed = true;
-        }
+        // if (i == 0) {
+        //     color = anchorColor;
+        //     isFixed = true;
+        // }
 
         float segmentScale = sideLength * (float(i) / float(length));
         Vector2 leftSideSegmentPos = Vector2Add(leftSideStart, Vector2Scale(leftSideNormal, segmentScale));
@@ -529,10 +624,14 @@ void TentacleInstruction::Execute(Solver& solver, Vector2 startPos) {
         int32_t leftObjIndex = solver.AddObject(leftSideSegmentPos, radius, color, isFixed, bodyID);
         int32_t rightObjIndex = solver.AddObject(rightSideSegmentPos, radius, color, isFixed, bodyID);
 
-        if (i > 0) {
-            solver.AddConstraint(leftObjIndices[leftObjIndices.size() - 1], leftObjIndex, maxLength, minLength);
-            solver.AddConstraint(rightObjIndices[rightObjIndices.size() - 1], rightObjIndex, maxLength, minLength);
+        if (i == 0) {
+            leftAnchorIndex = leftObjIndex;
+            rightAnchorIndex = rightObjIndex;
+        } else {
+            solver.AddConstraint(leftObjIndices[leftObjIndices.size() - 1], leftObjIndex, maxConstraintLength, minConstraintLength);
+            solver.AddConstraint(rightObjIndices[rightObjIndices.size() - 1], rightObjIndex, maxConstraintLength, minConstraintLength);
         }
+
 
         for (int32_t j = 1; j < 4; j++) {
             if (leftObjIndices.size() > j && rightObjIndices.size() > j) {
@@ -546,8 +645,9 @@ void TentacleInstruction::Execute(Solver& solver, Vector2 startPos) {
 
         leftObjIndices.push_back(leftObjIndex);
         rightObjIndices.push_back(rightObjIndex);
-
     }
+
+    GenerateControlPoints(solver, startPos, tentacleHeight, leftAnchorIndex, rightAnchorIndex);
 }
 
 void TentacleInstruction::GenerateSupportConstraints(Solver& solver, std::vector<int32_t>& rightObjIndices, std::vector<int32_t>& leftObjIndices, 
@@ -565,6 +665,37 @@ void TentacleInstruction::GenerateSupportConstraints(Solver& solver, std::vector
         float minDistanceLR = constraintDistanceLR * 0.95f;
         solver.AddConstraint(leftAnchorIndex, rightObjIndex, maxDistanceLR, minDistanceLR);
 }
+
+void TentacleInstruction::GenerateControlPoints(Solver& solver, Vector2 startPos, float tentacleHeight, 
+                                                int32_t leftAnchorIndex, int32_t rightAnchorIndex) {
+    // Add Constraints from Center of Body to Tentacle Anchors
+    float bodyToAnchorDistance = Vector2Distance(solver.objects[bodyObjIndex].currPosition, solver.objects[leftAnchorIndex].currPosition);
+    printf("Calculated Distance: %.2f. Body Radius: %.2f\n", bodyToAnchorDistance, bodyRadius);
+    solver.AddConstraint(bodyObjIndex, leftAnchorIndex, bodyRadius, bodyRadius);
+    solver.AddConstraint(bodyObjIndex, rightAnchorIndex, bodyRadius, bodyRadius);
+
+
+    // Add Control Point at the base of the Tentacle
+    int32_t baseController = solver.AddControlPoint(startPos, 10.0f, PURPLE, bodyID, GetNextControlID());
+    
+    // Stability of the Tentacle increased when the two anchors were slightly closer together
+    // It forced the first few constraints to be fully extended
+    // NTI: Distance shrinking should be based off of a ratio of the maximum constraint distance between the tentacle objects, 
+    // not just a magic number of 0.95;
+    float leftDistance = solver.GetDistanceBetweenObjectsCurrentPos(baseController, leftAnchorIndex);
+    // float leftDistance = rawLeftDistance * 0.95f;
+    float rightDistance = solver.GetDistanceBetweenObjectsCurrentPos(baseController, rightAnchorIndex);
+    // float rightDistance = rawRightDistance * 0.95f;
+
+    solver.AddConstraint(baseController, leftAnchorIndex, leftDistance, leftDistance);
+    solver.AddConstraint(baseController, rightAnchorIndex, rightDistance, rightDistance);
+}
+
+int32_t TentacleInstruction::GetNextControlID() {
+    latestControlID += 10;
+    return latestControlID;
+}
+
 
 struct Renderer {
 public:
@@ -686,7 +817,7 @@ public:
             VerletObject& obj = solver.objects[selectedObjectIndex];
             Vector2 newPos = Vector2Subtract(mousePos, dragOffset);
 
-            const float DRAG_SMOOTHING = 0.05f;
+            const float DRAG_SMOOTHING = 0.2f;
             obj.currPosition = Vector2Lerp(obj.currPosition, newPos, DRAG_SMOOTHING);
             // obj.lastPosition = obj.currPosition;
         }
@@ -715,7 +846,7 @@ public:
         if (GetFPS() < 60) { fpsLimitReached = true; }
         if (fpsLimitReached) { return; }
         if (spawner.spawnQueue.size() > 10) { return; }
-        if (solver.objects.size() >= 100) { return; }
+        if (solver.objects.size() >= 500) { return; }
         SpawnObjectStream();
     }
 
@@ -770,24 +901,29 @@ public:
         );
         spawner.AddSpawnCommand(std::move(rope2Cmd));
 
-        auto tentacleInstruction = std::make_unique<TentacleInstruction>(
+// TentacleMonsterInstruction(int32_t body_id, float body_radius, int32_t num_tentacles, int32_t tentacle_length, 
+// float obj_radius, Color default_color, Color anchor_color, Color control_color, float overlap_scalar, float tentacle_base_width)
+
+        auto monsterInstructions = std::make_unique<TentacleMonsterInstruction>(
             solver.bodyCount++,
-            23,
-            10.0f,
-            RED,
-            GREEN,
-            ORANGE,
-            1.8f,
             100.0f,
-            2
+            1,
+            25,
+            10.0f,
+            BLUE,
+            RED,
+            ORANGE,
+            1.5f,
+            50.0f
         );
-        SpawnCommand tentacleCmd(
-            SpawnCommand::TENTACLE,
-            {700.0f, 700.0f},
+
+        SpawnCommand monsterCmd(
+            SpawnCommand::TENTACLE_MONSTER,
+            {900.0f, 200.0f},
             0.5f,
-            std::move(tentacleInstruction)
+            std::move(monsterInstructions)
         );
-        spawner.AddSpawnCommand(std::move(tentacleCmd));
+        spawner.AddSpawnCommand(std::move(monsterCmd));
 
         while (!WindowShouldClose() && !gameStarted) {
             renderer.Render(solver);
