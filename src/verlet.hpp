@@ -36,6 +36,7 @@ struct VerletObject {
     Color color;
     bool hidden = false;
     bool fixed;
+    bool inputAllowed = false;
     bool controlPoint = false;
     int32_t controlPointID = -1;
     bool isSleeping = false;
@@ -43,22 +44,45 @@ struct VerletObject {
     bool wasInCollisionThisUpdate = false;
 
     VerletObject() = default;
+
+    // Free Object Constructor
     VerletObject(Vector2 pos, float radius, bool fixed)
         : currPosition(pos), lastPosition(pos), radius(radius), fixed(fixed) {}
 
+    // Body Object Constructor
     VerletObject(Vector2 pos, float radius, bool fixed, Color default_color, int32_t body_id)
         : currPosition(pos), lastPosition(pos), radius(radius), fixed(fixed), defaultColor(default_color), bodyID(body_id) {
             color = default_color;
         }
     
+    // Control Point Constructor
     VerletObject(Vector2 pos, float radius, Color default_color, int32_t body_id, int32_t control_point_id)
         : currPosition(pos), lastPosition(pos), radius(radius), fixed(true), defaultColor(default_color), 
-        bodyID(body_id), controlPoint(true), controlPointID(control_point_id) {
+        bodyID(body_id), controlPoint(true), controlPointID(control_point_id), inputAllowed(true) {
             color = default_color;
         }
 
     void UpdatePosition(float dt) {
-        if (fixed) {acceleration = {0.0f, 0.0f}; return;}
+        if (fixed && !inputAllowed) {
+            StopObject();
+            return;
+        }
+
+        if (fixed && inputAllowed) {
+            const Vector2 velocity = Vector2Subtract(currPosition, lastPosition);
+
+            const float speed = Vector2Length(velocity);
+            const float speedNormalized = std::min(speed / 100.0f, 9.0f);
+            const float logFactor = std::log(speedNormalized + 1.0f) / std::log(9.0f + 1.0f);
+            const float dynamicDamping = MIN_DAMPING_FACTOR + logFactor * (MAX_DAMPING_FACTOR - MIN_DAMPING_FACTOR);
+
+            Vector2 dynamicVelocity = Vector2Scale(velocity, dynamicDamping);
+
+            lastPosition = currPosition;
+            currPosition = currPosition + dynamicVelocity + acceleration * dt * dt;
+            acceleration = {0.0f, 0.0f};
+            return;
+        }
 
         const Vector2 velocity = Vector2Subtract(currPosition, lastPosition);
         const float speed = Vector2Length(velocity);
@@ -73,16 +97,14 @@ struct VerletObject {
             }
         }
 
-        const float distance = Vector2Distance(currPosition, lastPosition);
-
         const float speedNormalized = std::min(speed / 100.0f, 9.0f);
         const float logFactor = std::log(speedNormalized + 1.0f) / std::log(9.0f + 1.0f);
         const float dynamicDamping = MIN_DAMPING_FACTOR + logFactor * (MAX_DAMPING_FACTOR - MIN_DAMPING_FACTOR);
 
         // Vector2 temp = currPosition;
-        const Vector2 displacement = Vector2Subtract(currPosition, lastPosition) * dynamicDamping;
+        const Vector2 dynamicVelocity = Vector2Scale(velocity, dynamicDamping);
         lastPosition = currPosition;
-        currPosition = currPosition + displacement + acceleration * dt * dt;
+        currPosition = currPosition + dynamicVelocity + acceleration * dt * dt;
 
         if (bodyID == -1) {
             UpdateSleepState(speed, dt);
@@ -91,6 +113,11 @@ struct VerletObject {
         acceleration = {0.0f, 0.0f};
         UpdateColor();
         wasInCollisionThisUpdate = false;
+    }
+
+    void StopObject() {
+        acceleration = {0.0f, 0.0f};
+        lastPosition = currPosition;
     }
 
     void UpdateColor() {
@@ -115,7 +142,7 @@ struct VerletObject {
     void Sleep() {
         if (!isSleeping) {
             isSleeping = true;
-            lastPosition = currPosition;
+            StopObject();
             defaultColor = GRAY;
         }
     }
@@ -285,6 +312,7 @@ struct TentacleMonsterInstruction : public SpawnInstruction{
     static void ValidateParameters(int32_t length, float radius, float overlapScalar, float baseWidth);
 
     void Execute(Solver& solver, Vector2 startPos) override;
+    void GenerateBodyObjects(Solver& solver, int32_t bodyControlIdx);
 };
 
 struct TentacleInstruction : public SpawnInstruction {
@@ -523,18 +551,25 @@ void RopeInstruction::Execute(Solver& solver, Vector2 startPos) {
     for (int i = 0; i < length; i++) {
         Vector2 segmentPos = {startPos.x, startPos.y + i * segmentSpacing};
         bool isFixed = (i == 0);
+        bool isInputAllowed = (i == 0);
         Color color = isFixed ? fixedColor : defaultColor;
 
-        int32_t objIndex = solver.AddObject(segmentPos, radius, color, isFixed, bodyID);
+        int32_t objIndex;
+        if (i == 0) {
+            objIndex = solver.AddControlPoint(segmentPos, radius, color, bodyID, 1);
+        } else {
+            objIndex = solver.AddObject(segmentPos, radius, color, isFixed, bodyID);
+        }
 
-        int32_t currentIndex = static_cast<int32_t>(solver.objects.size()) - 1;
+
+        // int32_t currentIndex = static_cast<int32_t>(solver.objects.size()) - 1;
 
         if (i > 0 && lastRopeSegmentIndex != -1) {
             float maxLength = radius * 2.0f;
             float minLength = radius * 1.5f;
-            solver.AddConstraint(lastRopeSegmentIndex, currentIndex, maxLength, minLength);
+            solver.AddConstraint(lastRopeSegmentIndex, objIndex, maxLength, minLength);
         }
-        lastRopeSegmentIndex = currentIndex;
+        lastRopeSegmentIndex = objIndex;
     }
 }
 
@@ -567,6 +602,7 @@ void TentacleMonsterInstruction::ValidateParameters(int32_t length, float radius
 
 void TentacleMonsterInstruction::Execute(Solver& solver, Vector2 startPos) {
     int32_t bodyControlIdx = solver.AddControlPoint(startPos, objRadius, controlColor, bodyID, bodyControlID);
+    GenerateBodyObjects(solver, bodyControlIdx);
 
     Vector2 tentacleStartPos = Vector2Add(startPos, {0.0f, bodyRadius});
 
@@ -589,11 +625,52 @@ void TentacleMonsterInstruction::Execute(Solver& solver, Vector2 startPos) {
     }
 }
 
+void TentacleMonsterInstruction::GenerateBodyObjects(Solver& solver, int32_t bodyControlIdx) {
+    float estArcLength = objRadius * overlapScalar;
+    float estAngleStep = estArcLength / bodyRadius;
+    int32_t numObj = static_cast<int32_t>(std::round(2 * PI / estAngleStep));
+    float angleStep = (2 * PI) / numObj;
+    float arcLength = bodyRadius * angleStep;
+
+    float maxCenterConstraint = bodyRadius * 1.05f;
+    float minCenterconstraint = bodyRadius * 0.95f;
+
+    float maxPerimeterConstraint = objRadius * overlapScalar * 1.01f;
+    float minPerimeterConstraint = objRadius * overlapScalar * 0.99f;
+
+    int32_t firstObjIdx = -1;
+    int32_t lastObjIdx = -1;
+
+    Vector2 centerPos = solver.objects[bodyControlIdx].currPosition;
+
+    for (int32_t i = 0; i < numObj; i++) {
+        float objAngle = angleStep * i;
+        Vector2 angleNormal = {cos(objAngle), sin(objAngle)};
+        Vector2 offsetFromCenter = Vector2Scale(angleNormal, bodyRadius);
+        Vector2 objPos = Vector2Add(centerPos, offsetFromCenter);
+        int32_t objIdx = solver.AddObject(objPos, objRadius, defaultColor, false, bodyID);
+        solver.AddConstraint(objIdx, bodyControlIdx, maxCenterConstraint, minCenterconstraint);
+        if ( i == 0 ) {
+            firstObjIdx = objIdx;
+        } else {
+            solver.AddConstraint(objIdx, lastObjIdx, maxPerimeterConstraint, minPerimeterConstraint);
+        }
+
+        lastObjIdx = objIdx;
+    }
+    
+    solver.AddConstraint(lastObjIdx, firstObjIdx, maxPerimeterConstraint, minPerimeterConstraint);
+
+}
+
 void TentacleInstruction::Execute(Solver& solver, Vector2 startPos) {
     std::vector<int32_t> leftObjIndices;
     std::vector<int32_t> rightObjIndices;
     
     float halfBaseWidth = baseWidth / 2;
+    // Right now the length is determined by the number of objects I pass through to be in the tentacle along with the overlap scalar
+    // Using those two metrics I can adjust the overall length.  If I wanted to just pass in the overall length and the overlap scalar
+    // It would need to calculate the num of objects it needs to reach it.  If I want to change that it would be here.
     float sideLength = length * radius * overlapScalar;
 
     float tentacleHeight = sqrt(sideLength * sideLength - halfBaseWidth * halfBaseWidth);
@@ -806,7 +883,7 @@ public:
             selectedObjectIndex = FindObjectAtPosition(mousePos);
             if (selectedObjectIndex == -1) {return;}
             VerletObject& obj = solver.objects[selectedObjectIndex];
-            if (obj.fixed) {
+            if (obj.inputAllowed) {
                 isDragging = true;
                 dragOffset = Vector2Subtract(mousePos, obj.currPosition);
                 obj.defaultColor = GREEN;
@@ -815,16 +892,21 @@ public:
 
         if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && isDragging && selectedObjectIndex != -1) {
             VerletObject& obj = solver.objects[selectedObjectIndex];
-            Vector2 newPos = Vector2Subtract(mousePos, dragOffset);
+            obj.StopObject();
+            
+            Vector2 targetPos = Vector2Subtract(mousePos, dragOffset);
+            Vector2 desiredVelocity = Vector2Scale(Vector2Subtract(targetPos, obj.currPosition), 20.0f);
+            solver.SetObjectVelocity(selectedObjectIndex, desiredVelocity);
 
-            const float DRAG_SMOOTHING = 0.2f;
-            obj.currPosition = Vector2Lerp(obj.currPosition, newPos, DRAG_SMOOTHING);
-            // obj.lastPosition = obj.currPosition;
+            // const float DRAG_SMOOTHING = 0.2f;
+            // obj.currPosition = Vector2Lerp(obj.currPosition, targetPos, DRAG_SMOOTHING);
+            // // obj.lastPosition = obj.currPosition;
         }
 
         if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
             if (isDragging && selectedObjectIndex != -1) {
                 solver.objects[selectedObjectIndex].defaultColor = RED;
+                solver.objects[selectedObjectIndex].StopObject();
             }
             isDragging = false;
             selectedObjectIndex = -1;
@@ -885,6 +967,13 @@ public:
         );
         spawner.AddSpawnCommand(std::move(ropeCmd));
 
+        auto bigFix = std::make_unique<FreeObjectInstruction>(
+            10.0f,
+            WHITE,
+            2.0 * PI,
+            700.0f
+        );
+
         auto rope2Instruction = std::make_unique<RopeInstruction>(
             solver.bodyCount++,
             1,
@@ -902,7 +991,7 @@ public:
         spawner.AddSpawnCommand(std::move(rope2Cmd));
 
 // TentacleMonsterInstruction(int32_t body_id, float body_radius, int32_t num_tentacles, int32_t tentacle_length, 
-// float obj_radius, Color default_color, Color anchor_color, Color control_color, float overlap_scalar, float tentacle_base_width)
+// float obj_radius, Color default_color, Color anchor_color, Color l_color, float overlap_scalar, float tentacle_base_width)
 
         auto monsterInstructions = std::make_unique<TentacleMonsterInstruction>(
             solver.bodyCount++,
