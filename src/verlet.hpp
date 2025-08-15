@@ -57,7 +57,7 @@ struct VerletObject {
     
     // Control Point Constructor
     VerletObject(Vector2 pos, float radius, Color default_color, int32_t body_id, int32_t control_point_id)
-        : currPosition(pos), lastPosition(pos), radius(radius), fixed(true), defaultColor(default_color), 
+        : currPosition(pos), lastPosition(pos), radius(radius), fixed(false), defaultColor(default_color), 
         bodyID(body_id), controlPoint(true), controlPointID(control_point_id), inputAllowed(true) {
             color = default_color;
         }
@@ -728,7 +728,7 @@ void TentacleInstruction::Execute(Solver& solver, Vector2 startPos) {
 }
 
 void TentacleInstruction::GenerateSupportConstraints(Solver& solver, std::vector<int32_t>& rightObjIndices, std::vector<int32_t>& leftObjIndices, 
-    Vector2 rightSideSegmentPos, Vector2 leftSideSegmentPos, int32_t rightObjIndex, int32_t leftObjIndex, int32_t relativeAnchorPosition) {        
+    Vector2 rightSideSegmentPos, Vector2 leftSideSegmentPos, int32_t rightObjIndex, int32_t leftObjIndex, int32_t relativeAnchorPosition) {     
 
         int32_t rightAnchorIndex = rightObjIndices[rightObjIndices.size() - (relativeAnchorPosition + 1)];
         float constraintDistanceRL = Vector2Distance(solver.objects[rightAnchorIndex].currPosition, leftSideSegmentPos);
@@ -754,6 +754,7 @@ void TentacleInstruction::GenerateControlPoints(Solver& solver, Vector2 startPos
 
     // Add Control Point at the base of the Tentacle
     int32_t baseController = solver.AddControlPoint(startPos, 10.0f, PURPLE, bodyID, GetNextControlID());
+    solver.AddConstraint(bodyObjIndex, baseController, bodyRadius, bodyRadius);
     
     // Stability of the Tentacle increased when the two anchors were slightly closer together
     // It forced the first few constraints to be fully extended
