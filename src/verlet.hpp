@@ -1,172 +1,25 @@
 #pragma once
-#include "raylib.h"
-#include "raymath.h"
 #include <vector>
 #include <queue>
 #include <memory>
 #include <unordered_map>
-#include <cmath>
-#include <cstdint>
+#include <cmath>            // for std::log, std::min
+#include <cstdint>          // for int32_t
 #include <stdexcept>
 #include <cstdio>
 
+#include "raylib.h"
+#include "raymath.h"
+#include "physics/verlet_object.hpp"
+
 constexpr int DEFAULT_SUBSTEPS = 8;
 constexpr int JAKOBSEN_ITERATIONS = 10;
-constexpr float DEFAULT_RADIUS = 10.0f;
-constexpr float MAX_DAMPING_FACTOR = 0.9995f;
-constexpr float MIN_DAMPING_FACTOR = 0.999f;
+
 constexpr float DEFAULT_GRAVITY = 980.7f;
 constexpr float MARGIN_WIDTH = 10.0f;
 constexpr float RESPONSE_COEF = 0.5f;
 
 struct Solver;
-
-struct VerletObject {
-    static constexpr float SLEEP_VELOCITY_THRESHOLD = 0.1f;
-    static constexpr float WAKE_VELOCITY_THRESHOLD = 1.0F;
-    static constexpr float SLEEP_TIME_REQUIRED = 5.0f;
-    static constexpr float MAX_DAMPING_FACTOR = 0.9995f;
-    static constexpr float MIN_DAMPING_FACTOR = 0.999f;
-    int32_t bodyID = -1;
-    Vector2 currPosition = {0.0f, 0.0f};
-    Vector2 lastPosition = {0.0f, 0.0f};
-    Vector2 acceleration = {0.0f, 0.0f};
-    float radius = DEFAULT_RADIUS;
-    Color defaultColor;
-    Color color;
-    bool hidden = false;
-    bool fixed;
-    bool inputAllowed = false;
-    bool controlPoint = false;
-    int32_t controlPointID = -1;
-    bool isSleeping = false;
-    float sleepTimer = 0.0f;
-    bool wasInCollisionThisUpdate = false;
-
-    VerletObject() = default;
-
-    // Free Object Constructor
-    VerletObject(Vector2 pos, float radius, bool fixed)
-        : currPosition(pos), lastPosition(pos), radius(radius), fixed(fixed) {}
-
-    // Body Object Constructor
-    VerletObject(Vector2 pos, float radius, bool fixed, Color default_color, int32_t body_id)
-        : currPosition(pos), lastPosition(pos), radius(radius), fixed(fixed), defaultColor(default_color), bodyID(body_id) {
-            color = default_color;
-        }
-    
-    // Control Point Constructor
-    VerletObject(Vector2 pos, float radius, Color default_color, int32_t body_id, int32_t control_point_id)
-        : currPosition(pos), lastPosition(pos), radius(radius), fixed(false), defaultColor(default_color), 
-        bodyID(body_id), controlPoint(true), controlPointID(control_point_id), inputAllowed(true) {
-            color = default_color;
-        }
-
-    void UpdatePosition(float dt) {
-        if (fixed && !inputAllowed) {
-            StopObject();
-            return;
-        }
-
-        if (fixed && inputAllowed) {
-            const Vector2 velocity = Vector2Subtract(currPosition, lastPosition);
-
-            const float speed = Vector2Length(velocity);
-            const float speedNormalized = std::min(speed / 100.0f, 9.0f);
-            const float logFactor = std::log(speedNormalized + 1.0f) / std::log(9.0f + 1.0f);
-            const float dynamicDamping = MIN_DAMPING_FACTOR + logFactor * (MAX_DAMPING_FACTOR - MIN_DAMPING_FACTOR);
-
-            Vector2 dynamicVelocity = Vector2Scale(velocity, dynamicDamping);
-
-            lastPosition = currPosition;
-            currPosition = currPosition + dynamicVelocity + acceleration * dt * dt;
-            acceleration = {0.0f, 0.0f};
-            return;
-        }
-
-        const Vector2 velocity = Vector2Subtract(currPosition, lastPosition);
-        const float speed = Vector2Length(velocity);
-
-        if (isSleeping) {
-            float displacement = Vector2Distance(currPosition, lastPosition);
-            if (displacement > radius * 0.1f || speed > WAKE_VELOCITY_THRESHOLD || wasInCollisionThisUpdate) {
-                Wake();
-            } else {
-                acceleration = {0.0f, 0.0f};
-                return;
-            }
-        }
-
-        const float speedNormalized = std::min(speed / 100.0f, 9.0f);
-        const float logFactor = std::log(speedNormalized + 1.0f) / std::log(9.0f + 1.0f);
-        const float dynamicDamping = MIN_DAMPING_FACTOR + logFactor * (MAX_DAMPING_FACTOR - MIN_DAMPING_FACTOR);
-
-        // Vector2 temp = currPosition;
-        const Vector2 dynamicVelocity = Vector2Scale(velocity, dynamicDamping);
-        lastPosition = currPosition;
-        currPosition = currPosition + dynamicVelocity + acceleration * dt * dt;
-
-        if (bodyID == -1) {
-            UpdateSleepState(speed, dt);
-        }
-
-        acceleration = {0.0f, 0.0f};
-        UpdateColor();
-        wasInCollisionThisUpdate = false;
-    }
-
-    void StopObject() {
-        acceleration = {0.0f, 0.0f};
-        lastPosition = currPosition;
-    }
-
-    void UpdateColor() {
-        if (wasInCollisionThisUpdate) {
-            color = PINK;
-        } else {
-            color = defaultColor;
-        }
-    }
-
-    void UpdateSleepState(float speed, float dt) {
-        if (speed < SLEEP_VELOCITY_THRESHOLD) {
-            sleepTimer += dt;
-            if (sleepTimer > SLEEP_TIME_REQUIRED) {
-                Sleep();
-            }
-        } else {
-            sleepTimer = 0.0f;
-        }
-    }
-
-    void Sleep() {
-        if (!isSleeping) {
-            isSleeping = true;
-            StopObject();
-            defaultColor = GRAY;
-        }
-    }
-
-    void Wake() {
-        if (isSleeping) {
-            sleepTimer = 0.0f;
-            isSleeping = false;
-            defaultColor = WHITE;
-        }
-    }
-
-    void NotifyCollision() {
-        wasInCollisionThisUpdate = true;
-        if (isSleeping) {
-            Wake();
-        }
-    }
-
-    void UpdateVelocity(Vector2 v, float dt) {
-        lastPosition = Vector2Subtract(lastPosition, Vector2Scale(v, dt));
-        Wake();
-    }
-};
 
 struct VerletConstraint {
     int32_t obj1Index;
@@ -188,9 +41,9 @@ struct VerletConstraint {
         VerletObject& obj1 = objects[obj1Index];
         VerletObject& obj2 = objects[obj2Index];
         
-        if (obj1.fixed && obj2.fixed) {return;}
+        if (obj1.IsFixed() && obj2.IsFixed()) {return;}
 
-        const Vector2 displacement = Vector2Subtract(obj1.currPosition, obj2.currPosition);
+        const Vector2 displacement = Vector2Subtract(obj1.GetPosition(), obj2.GetPosition());
         float distance = Vector2Length(displacement);
 
         const float MIN_DISTANCE = 0.001f;
@@ -209,14 +62,14 @@ struct VerletConstraint {
         const float CONSTRAINT_DAMPING = 0.5f;
         delta *= CONSTRAINT_DAMPING;
 
-        if (!obj1.fixed && obj2.fixed) {
-            obj1.currPosition = Vector2Add(obj1.currPosition, Vector2Scale(normal, delta));
-        } else if (obj1.fixed && !obj2.fixed) {
-            obj2.currPosition = Vector2Subtract(obj2.currPosition, Vector2Scale(normal, delta));
-        } else if (!obj1.fixed && !obj2.fixed) {
+        if (!obj1.IsFixed() && obj2.IsFixed()) {
+            obj1.SetPosition(Vector2Add(obj1.GetPosition(), Vector2Scale(normal, delta)));
+        } else if (obj1.IsFixed() && !obj2.IsFixed()) {
+            obj2.SetPosition(Vector2Subtract(obj2.GetPosition(), Vector2Scale(normal, delta)));
+        } else if (!obj1.IsFixed() && !obj2.IsFixed()) {
             const Vector2 halfDelta = Vector2Scale(normal, delta * 0.5f);
-            obj1.currPosition = Vector2Add(obj1.currPosition, halfDelta);
-            obj2.currPosition = Vector2Subtract(obj2.currPosition, halfDelta);
+            obj1.SetPosition(Vector2Add(obj1.GetPosition(), halfDelta));
+            obj2.SetPosition(Vector2Subtract(obj2.GetPosition(), halfDelta));
         }
     }
 };
@@ -641,7 +494,7 @@ void TentacleMonsterInstruction::GenerateBodyObjects(Solver& solver, int32_t bod
     int32_t firstObjIdx = -1;
     int32_t lastObjIdx = -1;
 
-    Vector2 centerPos = solver.objects[bodyControlIdx].currPosition;
+    Vector2 centerPos = solver.objects[bodyControlIdx].GetPosition();
 
     for (int32_t i = 0; i < numObj; i++) {
         float objAngle = angleStep * i;
@@ -731,13 +584,13 @@ void TentacleInstruction::GenerateSupportConstraints(Solver& solver, std::vector
     Vector2 rightSideSegmentPos, Vector2 leftSideSegmentPos, int32_t rightObjIndex, int32_t leftObjIndex, int32_t relativeAnchorPosition) {     
 
         int32_t rightAnchorIndex = rightObjIndices[rightObjIndices.size() - (relativeAnchorPosition + 1)];
-        float constraintDistanceRL = Vector2Distance(solver.objects[rightAnchorIndex].currPosition, leftSideSegmentPos);
+        float constraintDistanceRL = Vector2Distance(solver.objects[rightAnchorIndex].GetPosition(), leftSideSegmentPos);
         float maxDistanceRL = constraintDistanceRL * 1.05f;
         float minDistanceRL = constraintDistanceRL * 0.95f;
         solver.AddConstraint(rightAnchorIndex, leftObjIndex, maxDistanceRL, minDistanceRL);
         
         int32_t leftAnchorIndex = leftObjIndices[leftObjIndices.size() - (relativeAnchorPosition + 1)];
-        float constraintDistanceLR = Vector2Distance(solver.objects[leftAnchorIndex].currPosition, rightSideSegmentPos);
+        float constraintDistanceLR = Vector2Distance(solver.objects[leftAnchorIndex].GetPosition(), rightSideSegmentPos);
         float maxDistanceLR = constraintDistanceLR * 1.05f;
         float minDistanceLR = constraintDistanceLR * 0.95f;
         solver.AddConstraint(leftAnchorIndex, rightObjIndex, maxDistanceLR, minDistanceLR);
@@ -746,7 +599,7 @@ void TentacleInstruction::GenerateSupportConstraints(Solver& solver, std::vector
 void TentacleInstruction::GenerateControlPoints(Solver& solver, Vector2 startPos, float tentacleHeight, 
                                                 int32_t leftAnchorIndex, int32_t rightAnchorIndex) {
     // Add Constraints from Center of Body to Tentacle Anchors
-    float bodyToAnchorDistance = Vector2Distance(solver.objects[bodyObjIndex].currPosition, solver.objects[leftAnchorIndex].currPosition);
+    float bodyToAnchorDistance = Vector2Distance(solver.objects[bodyObjIndex].GetPosition(), solver.objects[leftAnchorIndex].GetPosition());
     printf("Calculated Distance: %.2f. Body Radius: %.2f\n", bodyToAnchorDistance, bodyRadius);
     solver.AddConstraint(bodyObjIndex, leftAnchorIndex, bodyRadius, bodyRadius);
     solver.AddConstraint(bodyObjIndex, rightAnchorIndex, bodyRadius, bodyRadius);
@@ -810,7 +663,7 @@ private:
     void RenderObjects(const Solver& solver) const {
         const auto& objects = solver.objects;
         for (auto& obj : objects) {
-            DrawCircle(obj.currPosition.x, obj.currPosition.y, obj.radius, obj.color);
+            DrawCircle(obj.GetPosition().x, obj.GetPosition().y, obj.GetRadius(), obj.GetColor());
         }
     }
 
@@ -884,10 +737,10 @@ public:
             selectedObjectIndex = FindObjectAtPosition(mousePos);
             if (selectedObjectIndex == -1) {return;}
             VerletObject& obj = solver.objects[selectedObjectIndex];
-            if (obj.inputAllowed) {
+            if (obj.IsInputAllowed()) {
                 isDragging = true;
-                dragOffset = Vector2Subtract(mousePos, obj.currPosition);
-                obj.defaultColor = GREEN;
+                dragOffset = Vector2Subtract(mousePos, obj.GetPosition());
+                obj.SetColor(GREEN);
             }
         }
 
@@ -896,7 +749,7 @@ public:
             obj.StopObject();
             
             Vector2 targetPos = Vector2Subtract(mousePos, dragOffset);
-            Vector2 desiredVelocity = Vector2Scale(Vector2Subtract(targetPos, obj.currPosition), 20.0f);
+            Vector2 desiredVelocity = Vector2Scale(Vector2Subtract(targetPos, obj.GetPosition()), 20.0f);
             solver.SetObjectVelocity(selectedObjectIndex, desiredVelocity);
 
             // const float DRAG_SMOOTHING = 0.2f;
@@ -906,7 +759,7 @@ public:
 
         if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
             if (isDragging && selectedObjectIndex != -1) {
-                solver.objects[selectedObjectIndex].defaultColor = RED;
+                solver.objects[selectedObjectIndex].SetColor(RED);
                 solver.objects[selectedObjectIndex].StopObject();
             }
             isDragging = false;
@@ -917,8 +770,8 @@ public:
     int32_t FindObjectAtPosition(Vector2 pos) {
         for (int32_t i = 0; i < static_cast<int32_t>(solver.objects.size()); i++) {
             const VerletObject& obj = solver.objects[i];
-            float distance = Vector2Distance(pos, obj.currPosition);
-            if (distance <=obj.radius) {
+            float distance = Vector2Distance(pos, obj.GetPosition());
+            if (distance <=obj.GetRadius()) {
                 return i;
             }
         }
