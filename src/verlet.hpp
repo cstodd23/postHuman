@@ -10,7 +10,7 @@
 
 #include "raylib.h"
 #include "raymath.h"
-#include "physics/verlet_object.hpp"
+#include "physics/verlet_components.hpp"
 
 constexpr int DEFAULT_SUBSTEPS = 8;
 constexpr int JAKOBSEN_ITERATIONS = 10;
@@ -20,59 +20,6 @@ constexpr float MARGIN_WIDTH = 10.0f;
 constexpr float RESPONSE_COEF = 0.5f;
 
 struct Solver;
-
-struct VerletConstraint {
-    int32_t obj1Index;
-    int32_t obj2Index;
-    const float maxTargetDistance;
-    const float minTargetDistance;
-    const float targetAngle = 2.0f * PI;
-    bool inBody;
-
-    VerletConstraint(int32_t obj_1_index, int32_t obj_2_index, float max_target_distance, float min_target_distance)
-        : obj1Index(obj_1_index), obj2Index(obj_2_index), maxTargetDistance(max_target_distance), minTargetDistance(min_target_distance) {}
-
-    void apply(std::vector<VerletObject>& objects) {
-        int32_t objectsSize = static_cast<int32_t>(objects.size());
-        if (obj1Index >= objectsSize || obj2Index >= objectsSize || obj1Index < 0 || obj2Index < 0) {
-            return;
-        }
-
-        VerletObject& obj1 = objects[obj1Index];
-        VerletObject& obj2 = objects[obj2Index];
-        
-        if (obj1.IsFixed() && obj2.IsFixed()) {return;}
-
-        const Vector2 displacement = Vector2Subtract(obj1.GetPosition(), obj2.GetPosition());
-        float distance = Vector2Length(displacement);
-
-        const float MIN_DISTANCE = 0.001f;
-        if (distance < MIN_DISTANCE) {distance = MIN_DISTANCE;}
-        const Vector2 normal = Vector2Scale(displacement, 1.0f / distance);
-
-        float delta = 0.0f;
-        if (distance > maxTargetDistance) {
-            delta = maxTargetDistance - distance;
-        } else if (distance < minTargetDistance) {
-            delta = minTargetDistance - distance;
-        } else {
-            return; 
-        }
-
-        const float CONSTRAINT_DAMPING = 0.5f;
-        delta *= CONSTRAINT_DAMPING;
-
-        if (!obj1.IsFixed() && obj2.IsFixed()) {
-            obj1.SetPosition(Vector2Add(obj1.GetPosition(), Vector2Scale(normal, delta)));
-        } else if (obj1.IsFixed() && !obj2.IsFixed()) {
-            obj2.SetPosition(Vector2Subtract(obj2.GetPosition(), Vector2Scale(normal, delta)));
-        } else if (!obj1.IsFixed() && !obj2.IsFixed()) {
-            const Vector2 halfDelta = Vector2Scale(normal, delta * 0.5f);
-            obj1.SetPosition(Vector2Add(obj1.GetPosition(), halfDelta));
-            obj2.SetPosition(Vector2Subtract(obj2.GetPosition(), halfDelta));
-        }
-    }
-};
 
 struct SpawnInstruction {
     virtual ~SpawnInstruction() = default;
@@ -356,7 +303,7 @@ public:
 
         for (int32_t i = 0; i < JAKOBSEN_ITERATIONS; i++) {
             for (VerletConstraint& constraint : constraints) {
-                constraint.apply(objects);
+                constraint.Apply(objects);
             }
         }
     }

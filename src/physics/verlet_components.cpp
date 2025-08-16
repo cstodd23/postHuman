@@ -1,4 +1,4 @@
-#include "verlet_object.hpp"
+#include "verlet_components.hpp"
 #include "raymath.h"
 #include <algorithm>
 #include <cmath>
@@ -159,5 +159,92 @@ void VerletObject::UpdateSleepState(float speed, float dt) {
         }
     } else {
         sleepTimer = 0.0f;
+    }
+}
+
+VerletConstraint::VerletConstraint(int32_t obj_1_index, int32_t obj_2_index, 
+    float max_target_distance, float min_target_distance)
+    : obj1Index(obj_1_index), obj2Index(obj_2_index), maxTargetDistance(max_target_distance), 
+    minTargetDistance(min_target_distance) {}
+
+void VerletConstraint::Apply(std::vector<VerletObject>& objects) {
+    if(!active) { return; }
+
+    int32_t objectsSize = static_cast<int32_t>(objects.size());
+    if (obj1Index >= objectsSize || obj2Index >= objectsSize || obj1Index < 0 || obj2Index < 0) {
+        return;
+    }
+
+    VerletObject& obj1 = objects[obj1Index];
+    VerletObject& obj2 = objects[obj2Index];
+    
+    if (obj1.IsFixed() && obj2.IsFixed()) {return;}
+
+    const Vector2 displacement = Vector2Subtract(obj1.GetPosition(), obj2.GetPosition());
+    float distance = Vector2Length(displacement);
+
+    const float MIN_DISTANCE = 0.001f;
+    if (distance < MIN_DISTANCE) {distance = MIN_DISTANCE;}
+    const Vector2 normal = Vector2Scale(displacement, 1.0f / distance);
+
+    float delta = 0.0f;
+    if (distance > maxTargetDistance) {
+        delta = maxTargetDistance - distance;
+    } else if (distance < minTargetDistance) {
+        delta = minTargetDistance - distance;
+    } else {
+        return; 
+    }
+
+    delta *= damping;
+
+    ApplyConstraintForce(obj1, obj2, normal, delta);
+
+    // if (!obj1.IsFixed() && obj2.IsFixed()) {
+    //     obj1.SetPosition(Vector2Add(obj1.GetPosition(), Vector2Scale(normal, delta)));
+    // } else if (obj1.IsFixed() && !obj2.IsFixed()) {
+    //     obj2.SetPosition(Vector2Subtract(obj2.GetPosition(), Vector2Scale(normal, delta)));
+    // } else if (!obj1.IsFixed() && !obj2.IsFixed()) {
+    //     const Vector2 halfDelta = Vector2Scale(normal, delta * 0.5f);
+    //     obj1.SetPosition(Vector2Add(obj1.GetPosition(), halfDelta));
+    //     obj2.SetPosition(Vector2Subtract(obj2.GetPosition(), halfDelta));
+    // }
+}
+
+bool VerletConstraint::IsValidConstraint(const std::vector<VerletObject>& objects) const {
+    return ValidateIndices(static_cast<int32_t>(objects.size()));
+}
+
+float VerletConstraint::GetCurrentDistance(const std::vector<VerletObject>& objects) const {
+    if (!ValidateIndices(static_cast<int32_t>(objects.size()))) {
+        return -1.0f;
+    }
+
+    const VerletObject& obj1 = objects[obj1Index];
+    const VerletObject& obj2 = objects[obj2Index];
+
+    return Vector2Distance(obj1.GetPosition(), obj2.GetPosition());
+}
+
+// Helper Methods
+bool VerletConstraint::ValidateIndices(int32_t objectsSize) const {
+    return (obj1Index >= 0 && obj1Index < objectsSize &&
+            obj2Index >= 0 && obj2Index < objectsSize &&
+            obj1Index != obj2Index);
+}
+
+void VerletConstraint::ApplyConstraintForce(VerletObject& obj1, VerletObject& obj2, 
+                                            const Vector2& normal, float delta) const {
+
+    if (!obj1.IsFixed() && obj2.IsFixed()) {
+        obj1.SetPosition(Vector2Add(obj1.GetPosition(), Vector2Scale(normal, delta)));
+
+    } else if (obj1.IsFixed() && !obj2.IsFixed()) {
+        obj2.SetPosition(Vector2Subtract(obj2.GetPosition(), Vector2Scale(normal, delta)));
+
+    } else if (!obj1.IsFixed() && !obj2.IsFixed()) {
+        const Vector2 halfDelta = Vector2Scale(normal, delta * 0.5f);
+        obj1.SetPosition(Vector2Add(obj1.GetPosition(), halfDelta));
+        obj2.SetPosition(Vector2Subtract(obj2.GetPosition(), halfDelta));
     }
 }

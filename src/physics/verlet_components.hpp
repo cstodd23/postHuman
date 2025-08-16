@@ -1,6 +1,7 @@
 #pragma once
 #include <cmath>            // for std::log, std::min
 #include <cstdint>          // for int32_t
+#include <vector>
 #include "raylib.h"         // main raylib library
 
 constexpr float DEFAULT_RADIUS = 10.0f;
@@ -82,4 +83,41 @@ private:
     void UpdateSleepState(float speed, float dt);
 
     friend class Solver;
+};
+
+struct VerletConstraint {
+    public:
+    VerletConstraint(int32_t obj_1_index, int32_t obj_2_index, float max_target_distance, float min_target_distance);
+    
+    // Main Functionality
+    void Apply(std::vector<VerletObject>& objects);
+
+    // Getters
+    int32_t     GetObj1Index()      const { return obj1Index; }
+    int32_t     GetObj2Index()      const { return obj2Index; }
+    float       GetMaxDistance()    const { return maxTargetDistance; }
+    float       GetMinDistance()    const { return minTargetDistance; }
+    bool        IsActive()          const { return active; }
+
+    //  Utility Methods
+    bool IsValidConstraint(const std::vector<VerletObject>& objects) const;
+    float GetCurrentDistance(const std::vector<VerletObject>& objects) const;
+    void SetActive(bool isActive) { active = isActive; }
+
+    private:
+    int32_t obj1Index;
+    int32_t obj2Index;
+    const float maxTargetDistance;
+    const float minTargetDistance;
+
+    // Currently Unused, Future Implementation
+    bool active = true;
+    float damping = 0.5f;
+    const float targetAngle = 2.0f * PI;
+    bool inBody;
+
+    // Helper Methods
+    bool ValidateIndices(int32_t objectsSize) const;
+    void ApplyConstraintForce(VerletObject& obj1, VerletObject& obj2, const Vector2& normal, float delta) const;
+
 };
